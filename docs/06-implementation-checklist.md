@@ -20,7 +20,7 @@ Use this checklist to track delivery against the Agentic Service Architecture Bl
 - [x] MCP integration is ADK `McpToolset` based with request-time endpoint/auth resolution from JSON config.
 - [x] Callback hook scaffold file added for ADK tool guardrails (`before_tool`, `after_tool`, `on_tool_error`).
 - [x] Gemini runtime prerequisites documented (`GOOGLE_API_KEY`, `AGENT_MODEL_NAME`).
-- [ ] OpenSearch-backed adapters and schema-enforced writes wired (currently in-memory adapters).
+- [x] OpenSearch-backed adapters and schema-enforced writes wired (toggle via `AGENT_STORAGE_BACKEND=opensearch`).
 - [ ] Redis Streams wiring for lifecycle events/cancellation tokens.
 - [x] Full large-response pipeline (`write_temp` -> `read_lines` -> `exec_python`) wired.
 - [ ] Full acceptance checklist below completed.
@@ -100,12 +100,13 @@ Use this checklist to track delivery against the Agentic Service Architecture Bl
 
 ## G. OpenSearch and storage adapter
 
-- [ ] All five indices are created (`agent_memory`, `agent_souls`, `agent_sessions`, `agent_plans`, `agent_events`).
-- [ ] All index mappings use `dynamic: strict`.
-- [ ] Storage Adapter validates writes with local JSON Schema.
-- [ ] Schema violations raise `StorageSchemaError`.
-- [ ] `agent_memory` supports KNN + tenant/scope pre-filter.
-- [ ] `agent_events` has ILM retention configured.
+- [x] All five indices are created (`agent_memory`, `agent_souls`, `agent_sessions`, `agent_plans`, `agent_events`).
+- [x] All index mappings use `dynamic: strict`.
+- [x] Storage Adapter validates writes with local JSON Schema.
+- [x] Schema violations raise `StorageSchemaError`.
+- [x] `agent_memory` supports KNN + tenant/scope pre-filter.
+- [x] Embeddings are generated before memory writes and before KNN query-time search.
+- [x] `agent_events` has ILM retention configured.
 
 ## H. Monitoring and alerts
 

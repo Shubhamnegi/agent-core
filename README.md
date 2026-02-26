@@ -53,6 +53,20 @@ Services started:
 - OpenSearch (db/storage): `http://localhost:9200`
 - Mock skill service: `http://localhost:8081`
 
+## Storage backend
+
+- Default backend: in-memory (`AGENT_STORAGE_BACKEND=in_memory`)
+- OpenSearch backend: set `AGENT_STORAGE_BACKEND=opensearch`
+- OpenSearch adapter initializes strict mappings for:
+    - `agent_memory`, `agent_souls`, `agent_sessions`, `agent_plans`, `agent_events`
+- `agent_events` index is configured with ILM retention policy
+- `agent_memory` includes KNN vector mapping + tenant/scope pre-filter query support
+- Embeddings are generated through ADK helper utilities (`google.adk.tools.spanner.utils.embed_contents_async`)
+- Required embedding envs for OpenSearch KNN:
+    - `AGENT_EMBEDDING_MODEL_NAME` (example: `models/text-embedding-004`)
+    - `AGENT_EMBEDDING_OUTPUT_DIMENSIONALITY` (optional override)
+    - `AGENT_OPENSEARCH_EMBEDDING_DIMS` must match generated vector length
+
 ## MCP configuration (JSON)
 
 - Default MCP registry file: `config/mcp_config.json` (override with `AGENT_MCP_CONFIG_PATH`)

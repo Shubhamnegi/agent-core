@@ -9,8 +9,15 @@ class Settings(BaseSettings):
     model_name: str = "models/gemini-flash-lite-latest"
     max_plan_steps: int = 10
     max_replans: int = 3
+    storage_backend: str = "in_memory"
 
     opensearch_url: str = "http://localhost:9200"
+    opensearch_index_prefix: str = ""
+    opensearch_verify_certs: bool = False
+    opensearch_embedding_dims: int = 768
+    opensearch_events_retention_days: int = 30
+    embedding_model_name: str = "models/text-embedding-004"
+    embedding_output_dimensionality: int | None = None
     redis_url: str = "redis://localhost:6379/0"
     skill_service_url: str = "http://localhost:8081"
     skill_service_key: str | None = None

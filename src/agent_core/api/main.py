@@ -3,16 +3,24 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from typing import Any, cast
+from typing import Annotated, Any, cast
 from uuid import uuid4
 
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from opensearchpy import OpenSearch
 from starlette.responses import Response
 
 from agent_core.api.schemas import AgentRunPayload, AgentRunResult, MemoryQueryPayload, SoulPayload
+from agent_core.application.ports import (
+    EventRepository,
+    MemoryRepository,
+    PlanRepository,
+    SoulRepository,
+)
 from agent_core.application.services.orchestrator import AgentOrchestrator
 from agent_core.domain.exceptions import ReplanLimitReachedError
 from agent_core.domain.models import AgentRunRequest
+from agent_core.infra.adapters.embedding import AdkEmbeddingService, EmbeddingService
 from agent_core.infra.adapters.in_memory import (
     InMemoryEventRepository,
     InMemoryMemoryRepository,
@@ -20,6 +28,13 @@ from agent_core.infra.adapters.in_memory import (
     InMemoryPlanRepository,
     InMemorySoulRepository,
     event_to_dict,
+)
+from agent_core.infra.adapters.opensearch import (
+    OpenSearchEventRepository,
+    OpenSearchIndexManager,
+    OpenSearchMemoryRepository,
+    OpenSearchPlanRepository,
+    OpenSearchSoulRepository,
 )
 from agent_core.infra.adk.runtime import AdkRuntimeScaffold
 from agent_core.infra.agents.mock_executor import MockExecutorAgent
@@ -34,11 +49,55 @@ class Container:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.runtime_engine = settings.runtime_engine
-        self.plan_repo = InMemoryPlanRepository()
-        self.memory_repo = InMemoryMemoryRepository()
-        self.event_repo = InMemoryEventRepository()
         self.message_bus = InMemoryMessageBusPublisher()
-        self.soul_repo = InMemorySoulRepository()
+        self.plan_repo: PlanRepository
+        self.memory_repo: MemoryRepository
+        self.event_repo: EventRepository
+        self.soul_repo: SoulRepository
+        self.embedding_service: EmbeddingService | None = None
+
+        if settings.storage_backend == "opensearch":
+            # Why lazy-by-config: keeps local dev/tests stable without requiring OpenSearch uptime.
+            client = OpenSearch(
+                hosts=[settings.opensearch_url],
+                verify_certs=settings.opensearch_verify_certs,
+                ssl_show_warn=False,
+            )
+            OpenSearchIndexManager(
+                client=client,
+                index_prefix=settings.opensearch_index_prefix,
+                embedding_dims=settings.opensearch_embedding_dims,
+                events_retention_days=settings.opensearch_events_retention_days,
+            ).ensure_indices_and_policies()
+
+            self.embedding_service = AdkEmbeddingService(
+                model_name=settings.embedding_model_name,
+                output_dimensionality=settings.embedding_output_dimensionality,
+            )
+
+            self.plan_repo = OpenSearchPlanRepository(
+                client=client,
+                index_prefix=settings.opensearch_index_prefix,
+            )
+            self.memory_repo = OpenSearchMemoryRepository(
+                client=client,
+                index_prefix=settings.opensearch_index_prefix,
+                embedding_service=self.embedding_service,
+                expected_embedding_dims=settings.opensearch_embedding_dims,
+            )
+            self.event_repo = OpenSearchEventRepository(
+                client=client,
+                index_prefix=settings.opensearch_index_prefix,
+            )
+            self.soul_repo = OpenSearchSoulRepository(
+                client=client,
+                index_prefix=settings.opensearch_index_prefix,
+            )
+        else:
+            self.plan_repo = InMemoryPlanRepository()
+            self.memory_repo = InMemoryMemoryRepository()
+            self.event_repo = InMemoryEventRepository()
+            self.soul_repo = InMemorySoulRepository()
         self.adk_runtime = AdkRuntimeScaffold(
             app_name=settings.app_name,
             max_replans=settings.max_replans,
@@ -167,9 +226,32 @@ async def upsert_soul(tenant_id: str, payload: SoulPayload) -> dict[str, str]:
 
 
 @app.get("/agent/memory/query")
-async def query_memory(payload: MemoryQueryPayload) -> dict[str, Any]:
+async def query_memory(payload: Annotated[MemoryQueryPayload, Depends()]) -> dict[str, Any]:
+    container = cast(Container, app.state.container)
+    if container.embedding_service is None:
+        return {
+            "status": "not_implemented",
+            "reason": "embedding_service_not_configured",
+            "query": payload.model_dump(),
+        }
+
+    knn_search = getattr(container.memory_repo, "knn_search", None)
+    if not callable(knn_search):
+        return {
+            "status": "not_implemented",
+            "reason": "memory_backend_has_no_knn",
+            "query": payload.model_dump(),
+        }
+
+    query_vector = await container.embedding_service.embed_text(payload.query_text)
+    results = await knn_search(
+        tenant_id=payload.tenant_id,
+        scope=payload.scope,
+        query_vector=query_vector,
+        top_k=payload.top_k,
+    )
     return {
-        "status": "not_implemented",
-        "reason": "wire to OpenSearch adapter",
-        "query": payload.model_dump(),
+        "status": "ok",
+        "results": results,
+        "count": len(results),
     }
