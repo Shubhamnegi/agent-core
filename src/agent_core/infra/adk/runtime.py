@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Any
 from uuid import uuid4
 
@@ -17,7 +18,13 @@ from agent_core.infra.adk.agents import (
     build_executor_agent,
     build_planner_agent,
 )
-from agent_core.infra.adk.mcp import build_executor_mcp_toolset, build_planner_mcp_toolset
+from agent_core.infra.adk.mcp import (
+    ResolvedMcpEndpoint,
+    build_executor_mcp_toolset,
+    build_planner_mcp_toolset,
+    load_mcp_config,
+    resolve_mcp_endpoint,
+)
 
 
 class AdkRuntimeScaffold:
@@ -25,38 +32,56 @@ class AdkRuntimeScaffold:
         self,
         app_name: str = "agent-core",
         max_replans: int = 3,
-        mcp_server_url: str | None = None,
+        model_name: str = "models/gemini-flash-lite-latest",
+        mcp_config_path: str | None = None,
+        skill_service_url: str | None = None,
+        skill_service_key: str | None = None,
         event_repo: EventRepository | None = None,
     ) -> None:
         self.app_name = app_name
         self.max_replans = max_replans
-        self.mcp_server_url = mcp_server_url
+        self.model_name = model_name
+        self.mcp_config_path = mcp_config_path
+        self.skill_service_url = skill_service_url
+        self.skill_service_key = skill_service_key
         self.event_repo = event_repo
         self.executor_allowed_skills: list[str] = []
         self.planner_mcp_toolset: McpToolset | None = None
         self.executor_mcp_toolset: McpToolset | None = None
+        self._resolved_endpoint: ResolvedMcpEndpoint | None = None
         self._rebuild_runtime_graph()
 
     def configure_executor_step_tools(self, allowed_skills: list[str]) -> None:
         self.executor_allowed_skills = list(allowed_skills)
         self._rebuild_runtime_graph()
 
+    def configure_mcp_for_request(self, request_headers: dict[str, str]) -> None:
+        self._resolved_endpoint = self._resolve_request_endpoint(request_headers)
+        self._rebuild_runtime_graph()
+
     def _rebuild_runtime_graph(self) -> None:
-        if self.mcp_server_url:
-            self.planner_mcp_toolset = build_planner_mcp_toolset(self.mcp_server_url)
+        if self._resolved_endpoint is not None:
+            self.planner_mcp_toolset = build_planner_mcp_toolset(self._resolved_endpoint)
             self.executor_mcp_toolset = build_executor_mcp_toolset(
-                self.mcp_server_url,
+                self._resolved_endpoint,
                 self.executor_allowed_skills,
             )
         else:
             self.planner_mcp_toolset = None
             self.executor_mcp_toolset = None
 
-        self.planner_agent = build_planner_agent(self.planner_mcp_toolset)
-        self.executor_agent = build_executor_agent(self.executor_mcp_toolset)
+        self.planner_agent = build_planner_agent(
+            mcp_toolset=self.planner_mcp_toolset,
+            model_name=self.model_name,
+        )
+        self.executor_agent = build_executor_agent(
+            mcp_toolset=self.executor_mcp_toolset,
+            model_name=self.model_name,
+        )
         self.coordinator_agent = build_coordinator_agent(
             planner=self.planner_agent,
             executor=self.executor_agent,
+            model_name=self.model_name,
         )
         self.replan_loop_agent = LoopAgent(
             name="agent_core_replan_loop",
@@ -155,6 +180,20 @@ class AdkRuntimeScaffold:
             )
         )
 
+    def _resolve_request_endpoint(
+        self,
+        request_headers: dict[str, str],
+    ) -> ResolvedMcpEndpoint | None:
+        env_values = _build_runtime_env_overrides(self.skill_service_url, self.skill_service_key)
+        endpoint_config = _select_endpoint_config(self.mcp_config_path, env_values)
+        if not endpoint_config:
+            return None
+        return resolve_mcp_endpoint(
+            endpoint_config=endpoint_config,
+            request_headers=_normalize_headers(request_headers),
+            env_values=env_values,
+        )
+
 
 def _build_initial_session_state(request: AgentRunRequest) -> dict[str, Any]:
     return {
@@ -178,3 +217,72 @@ def _extract_event_text(event: Any) -> str:
 
 def _to_optional_str(value: Any) -> str | None:
     return value if isinstance(value, str) else None
+
+
+def _default_skill_service_endpoint() -> dict[str, Any]:
+    return {
+        "name": "skill_service",
+        "url_env": "AGENT_SKILL_SERVICE_URL",
+        "planner_tool_filter": ["find_relevant_skill", "load_instructions"],
+        "auth_headers": [
+            {
+                "name": "x-api-key",
+                "request_header": "x-skill-service-key",
+                "env": "AGENT_SKILL_SERVICE_KEY",
+            }
+        ],
+    }
+
+
+def _find_endpoint_by_name(config: dict[str, Any], endpoint_name: str) -> dict[str, Any] | None:
+    endpoints = config.get("endpoints", [])
+    if not isinstance(endpoints, list):
+        return None
+    for endpoint in endpoints:
+        if isinstance(endpoint, dict) and endpoint.get("name") == endpoint_name:
+            return endpoint
+    return None
+
+
+def _build_runtime_env_overrides(
+    skill_service_url: str | None,
+    skill_service_key: str | None,
+) -> dict[str, str]:
+    values = dict(os.environ)
+    if skill_service_url:
+        values["AGENT_SKILL_SERVICE_URL"] = skill_service_url
+    if skill_service_key:
+        values["AGENT_SKILL_SERVICE_KEY"] = skill_service_key
+    return values
+
+
+def _get_endpoint_name(config: dict[str, Any]) -> str:
+    endpoint_name = config.get("planner_endpoint")
+    if isinstance(endpoint_name, str) and endpoint_name:
+        return endpoint_name
+    return "skill_service"
+
+
+def _select_endpoint_config(
+    mcp_config_path: str | None,
+    env_values: dict[str, str],
+) -> dict[str, Any]:
+    if mcp_config_path:
+        config = load_mcp_config(mcp_config_path)
+        endpoint_name = _get_endpoint_name(config)
+        endpoint = _find_endpoint_by_name(config, endpoint_name)
+        if endpoint is None:
+            msg = "mcp_endpoint_not_found"
+            raise ValueError(msg)
+        return endpoint
+
+    fallback = _default_skill_service_endpoint()
+    if not env_values.get("AGENT_SKILL_SERVICE_URL"):
+        return {}
+    return fallback
+
+
+def _normalize_headers(request_headers: dict[str, str]) -> dict[str, str]:
+    return {key.lower(): value for key, value in request_headers.items()}
+
+

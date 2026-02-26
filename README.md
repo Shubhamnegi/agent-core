@@ -52,3 +52,17 @@ Services started:
 - Redis (queue/message bus base): `localhost:6379`
 - OpenSearch (db/storage): `http://localhost:9200`
 - Mock skill service: `http://localhost:8081`
+
+## MCP configuration (JSON)
+
+- Default MCP registry file: `config/mcp_config.json` (override with `AGENT_MCP_CONFIG_PATH`)
+- Per-endpoint transport is configured in JSON via `transport` (`streamable_http` or `sse`).
+- For remote MCP services, prefer `streamable_http` (ADK deployment pattern recommendation).
+- MCP endpoint auth is resolved per incoming `POST /agent/run` request.
+- For `skill_service`, API key resolution order is:
+    1. `X-Skill-Service-Key` request header
+    2. `AGENT_SKILL_SERVICE_KEY` env fallback
+
+Gemini runtime env:
+- `AGENT_MODEL_NAME` (default: `models/gemini-flash-lite-latest`)
+- `GOOGLE_API_KEY`

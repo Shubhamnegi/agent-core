@@ -42,7 +42,10 @@ class Container:
         self.adk_runtime = AdkRuntimeScaffold(
             app_name=settings.app_name,
             max_replans=settings.max_replans,
-            mcp_server_url=settings.mcp_server_url,
+            model_name=settings.model_name,
+            mcp_config_path=settings.mcp_config_path,
+            skill_service_url=settings.skill_service_url,
+            skill_service_key=settings.skill_service_key,
             event_repo=self.event_repo,
         )
         self.orchestrator = AgentOrchestrator(
@@ -87,6 +90,7 @@ async def request_id_middleware(
 
 @app.post("/agent/run", response_model=AgentRunResult)
 async def run_agent(
+    request: Request,
     payload: AgentRunPayload,
     x_tenant_id: str | None = Header(default=None, alias="X-Tenant-Id"),
     x_user_id: str | None = Header(default=None, alias="X-User-Id"),
@@ -106,6 +110,7 @@ async def run_agent(
     container = cast(Container, app.state.container)
     try:
         if container.runtime_engine == "adk_scaffold":
+            container.adk_runtime.configure_mcp_for_request(dict(request.headers))
             result = await container.adk_runtime.run(request_model)
         else:
             result = await container.orchestrator.run(request_model)

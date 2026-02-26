@@ -1,0 +1,33 @@
+{
+  "planner_endpoint": "skill_service",
+  "endpoints": [
+    {
+      "name": "skill_service",
+      "url_env": "AGENT_SKILL_SERVICE_URL",
+      "transport": "streamable_http",
+      "planner_tool_filter": [
+        "find_relevant_skill",
+        "load_instructions"
+      ],
+      "auth_headers": [
+        {
+          "name": "x-api-key",
+          "request_header": "x-skill-service-key",
+          "env": "AGENT_SKILL_SERVICE_KEY"
+        }
+      ]
+    },
+    {
+      "name": "aws_cost_explorer",
+      "transport": "stdio",
+      "command": "uvx",
+      "args": [
+        "awslabs.cost-explorer-mcp-server@latest"
+      ],
+      "stdio_env": {
+        "FASTMCP_LOG_LEVEL": "ERROR",
+        "AWS_PROFILE": "default"
+      }
+    }
+  ]
+}

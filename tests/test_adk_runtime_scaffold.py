@@ -1,3 +1,5 @@
+import json
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -28,20 +30,74 @@ def test_adk_runtime_uses_llm_coordinator_with_planner_executor_subagents() -> N
     assert subagent_names == ["planner_subagent_a", "executor_subagent_b"]
 
 
-def test_adk_runtime_wires_mcp_toolset_filters_for_planner_and_executor_step() -> None:
+def _write_mcp_config(path: Path) -> None:
+    payload = {
+        "planner_endpoint": "skill_service",
+        "endpoints": [
+            {
+                "name": "skill_service",
+                "url": "http://localhost:8081/mcp",
+                "planner_tool_filter": ["find_relevant_skill", "load_instructions"],
+                "auth_headers": [
+                    {
+                        "name": "x-api-key",
+                        "request_header": "x-skill-service-key",
+                        "env": "AGENT_SKILL_SERVICE_KEY",
+                    }
+                ],
+            }
+        ],
+    }
+    with path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle)
+
+
+def test_adk_runtime_wires_mcp_toolset_filters_for_planner_and_executor_step(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "mcp_config.json"
+    _write_mcp_config(config_path)
+
     runtime = AdkRuntimeScaffold(
         app_name="test-app",
         max_replans=3,
-        mcp_server_url="http://localhost:8081/mcp",
+        mcp_config_path=config_path.as_posix(),
+        skill_service_key="fallback-key",
     )
 
+    runtime.configure_mcp_for_request({"x-skill-service-key": "request-key"})
+
     assert isinstance(runtime.planner_mcp_toolset, McpToolset)
-    assert runtime.planner_mcp_toolset.tool_filter == ["find_relevant_skills", "load_skill"]
+    assert runtime.planner_mcp_toolset.tool_filter == ["find_relevant_skill", "load_instructions"]
+    assert runtime._resolved_endpoint is not None
+    assert runtime._resolved_endpoint.headers == {"x-api-key": "request-key"}
 
     runtime.configure_executor_step_tools(["skill_sales", "skill_inventory"])
 
     assert isinstance(runtime.executor_mcp_toolset, McpToolset)
     assert runtime.executor_mcp_toolset.tool_filter == ["skill_sales", "skill_inventory"]
+    assert runtime._resolved_endpoint is not None
+    assert runtime._resolved_endpoint.headers == {"x-api-key": "request-key"}
+
+
+def test_adk_runtime_uses_env_fallback_key_when_request_header_missing(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "mcp_config.json"
+    _write_mcp_config(config_path)
+
+    runtime = AdkRuntimeScaffold(
+        app_name="test-app",
+        max_replans=3,
+        mcp_config_path=config_path.as_posix(),
+        skill_service_key="fallback-key",
+    )
+
+    runtime.configure_mcp_for_request({})
+
+    assert isinstance(runtime.planner_mcp_toolset, McpToolset)
+    assert runtime._resolved_endpoint is not None
+    assert runtime._resolved_endpoint.headers == {"x-api-key": "fallback-key"}
 
 
 class _FakeSessionService:

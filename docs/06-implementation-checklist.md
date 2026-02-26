@@ -17,8 +17,9 @@ Use this checklist to track delivery against the Agentic Service Architecture Bl
 - [ ] Planner/Executor are implemented as ADK agents — currently mock local agents behind ports.
 - [x] Runtime orchestration scaffold is ADK-based (`InMemoryRunner` + root ADK workflow shell) behind `runtime_engine=adk_scaffold`.
 - [x] Planner/Executor scaffold roles exist as ADK custom agents.
-- [ ] MCP integration is ADK `McpToolset` based — currently not wired.
+- [x] MCP integration is ADK `McpToolset` based with request-time endpoint/auth resolution from JSON config.
 - [x] Callback hook scaffold file added for ADK tool guardrails (`before_tool`, `after_tool`, `on_tool_error`).
+- [x] Gemini runtime prerequisites documented (`GOOGLE_API_KEY`, `AGENT_MODEL_NAME`).
 - [ ] OpenSearch-backed adapters and schema-enforced writes wired (currently in-memory adapters).
 - [ ] Redis Streams wiring for lifecycle events/cancellation tokens.
 - [x] Full large-response pipeline (`write_temp` -> `read_lines` -> `exec_python`) wired.
@@ -34,6 +35,8 @@ Use this checklist to track delivery against the Agentic Service Architecture Bl
 - [x] Cross-session retrieval uses ADK `MemoryService` abstraction.
 - [x] Infra operation scaffold functions added for ADK tool wrapping.
 - [x] Skill execution/discovery uses ADK `McpToolset` with per-step `tool_filter`.
+- [x] MCP toolset/auth resolution occurs on incoming request, not at app startup.
+- [x] MCP auth supports request-derived headers plus env fallback per endpoint config.
 - [x] Contract guardrail callback scaffold added (`before_tool` / `after_tool` / error hooks).
 - [x] ADK event stream is mirrored into `agent_events` with lineage (`tenant_id`, `session_id`, `plan_id`, `task_id`).
 - [x] ADK migration preserves existing API boundary (`POST /agent/run`) and storage adapter boundary.
@@ -50,8 +53,8 @@ Use this checklist to track delivery against the Agentic Service Architecture Bl
 
 ## B. Planning and plan constraints
 
-- [ ] SubAgent-A uses `find_relevant_skills` for candidate discovery.
-- [ ] SubAgent-A loads manifests via `load_skill` for reranking.
+- [x] SubAgent-A uses `find_relevant_skill` for candidate discovery.
+- [x] SubAgent-A loads manifests via `load_instructions` for reranking.
 - [ ] SubAgent-A verifies each step `return_spec` against skill output schema.
 - [ ] Plan enforces max 10 steps.
 - [ ] Infeasible tasks (>10 steps) return structured failure.

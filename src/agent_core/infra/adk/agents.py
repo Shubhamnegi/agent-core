@@ -35,11 +35,12 @@ class ExecutorAgent(BaseAgent):
 def build_coordinator_agent(
     planner: BaseAgent,
     executor: BaseAgent,
+    model_name: str = "models/gemini-flash-lite-latest",
 ) -> LlmAgent:
     return LlmAgent(
         name="orchestrator_manager",
         description="Manager role scaffold",
-        model="gemini-2.0-flash",
+        model=model_name,
         instruction=(
             "ADK scaffold coordinator. Delegate planning/execution via sub-agents and "
             "emit concise response summaries."
@@ -48,12 +49,15 @@ def build_coordinator_agent(
     )
 
 
-def build_planner_agent(mcp_toolset: Any | None = None) -> LlmAgent:
+def build_planner_agent(
+    mcp_toolset: Any | None = None,
+    model_name: str = "models/gemini-flash-lite-latest",
+) -> LlmAgent:
     tools = [mcp_toolset] if mcp_toolset is not None else []
     return LlmAgent(
         name="planner_subagent_a",
         description="Planner role scaffold",
-        model="gemini-2.0-flash",
+        model=model_name,
         instruction=(
             "Use MCP discovery tools to identify and load relevant skills, then "
             "produce concise planning guidance."
@@ -62,12 +66,15 @@ def build_planner_agent(mcp_toolset: Any | None = None) -> LlmAgent:
     )
 
 
-def build_executor_agent(mcp_toolset: Any | None = None) -> LlmAgent:
+def build_executor_agent(
+    mcp_toolset: Any | None = None,
+    model_name: str = "models/gemini-flash-lite-latest",
+) -> LlmAgent:
     tools = [mcp_toolset] if mcp_toolset is not None else []
     return LlmAgent(
         name="executor_subagent_b",
         description="Executor role scaffold",
-        model="gemini-2.0-flash",
+        model=model_name,
         instruction=(
             "Use only allowed MCP skills for this step and return concise execution output."
         ),
