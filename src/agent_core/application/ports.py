@@ -46,6 +46,12 @@ class PlanRepository(Protocol):
 
 
 class MemoryRepository(Protocol):
+    """Memory persistence boundary used by orchestrator and infra tools.
+
+    Why this exists: orchestration logic should depend on an abstract memory contract,
+    so locking and storage semantics can evolve without changing execution flow code.
+    """
+
     async def write(
         self,
         tenant_id: str,
@@ -57,7 +63,7 @@ class MemoryRepository(Protocol):
     ) -> str:
         ...
 
-    async def read(self, namespaced_key: str) -> dict | None:
+    async def read(self, namespaced_key: str, release_lock: bool = False) -> dict | None:
         ...
 
 

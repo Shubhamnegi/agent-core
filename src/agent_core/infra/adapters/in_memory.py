@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import asdict
+from time import monotonic
 from typing import Any
 
 from agent_core.application.ports import (
@@ -10,7 +12,7 @@ from agent_core.application.ports import (
     PlanRepository,
     SoulRepository,
 )
-from agent_core.domain.exceptions import ContractViolationError
+from agent_core.domain.exceptions import ContractViolationError, MemoryLockError
 from agent_core.domain.models import EventRecord, Plan
 
 
@@ -26,8 +28,21 @@ class InMemoryPlanRepository(PlanRepository):
 
 
 class InMemoryMemoryRepository(MemoryRepository):
-    def __init__(self) -> None:
+    """In-memory memory store with lock semantics mirroring planned production behavior.
+
+    Why this logic is here: even in scaffold mode, enforcing contracts + lock behavior
+    catches orchestration issues early before OpenSearch/Redis adapters are wired.
+    """
+
+    def __init__(
+        self,
+        lock_wait_timeout_seconds: float = 5.0,
+        lock_ttl_seconds: float = 30.0,
+    ) -> None:
         self._data: dict[str, dict[str, Any]] = {}
+        self._locks: dict[str, _HeldLock] = {}
+        self._lock_wait_timeout_seconds = lock_wait_timeout_seconds
+        self._lock_ttl_seconds = lock_ttl_seconds
 
     async def write(
         self,
@@ -38,16 +53,51 @@ class InMemoryMemoryRepository(MemoryRepository):
         value: dict,
         return_spec_shape: dict,
     ) -> str:
-        if not _has_required_shape(value, return_spec_shape):
+        self._validate_user_key_label(key)
+        if not _matches_return_spec_contract(value, return_spec_shape):
             msg = "contract_violation"
             raise ContractViolationError(msg)
 
-        namespaced = f"{tenant_id}:{session_id}:{task_id}:{key}"
+        namespaced = _build_namespaced_key(tenant_id, session_id, task_id, key)
+        await self._acquire_write_lock(namespaced_key=namespaced, owner_task_id=task_id)
         self._data[namespaced] = value
         return namespaced
 
-    async def read(self, namespaced_key: str) -> dict | None:
-        return self._data.get(namespaced_key)
+    async def read(self, namespaced_key: str, release_lock: bool = False) -> dict | None:
+        value = self._data.get(namespaced_key)
+        if release_lock:
+            # Why release on orchestrator read: it acts as explicit confirmation that
+            # step output was consumed, matching the intended lock lifecycle contract.
+            self._locks.pop(namespaced_key, None)
+        return value
+
+    async def _acquire_write_lock(self, namespaced_key: str, owner_task_id: str) -> None:
+        deadline = monotonic() + self._lock_wait_timeout_seconds
+        while True:
+            self._evict_expired_lock(namespaced_key)
+            held_lock = self._locks.get(namespaced_key)
+
+            if held_lock is None or held_lock.owner_task_id == owner_task_id:
+                self._locks[namespaced_key] = _HeldLock(
+                    owner_task_id=owner_task_id,
+                    expires_at=monotonic() + self._lock_ttl_seconds,
+                )
+                return
+
+            if monotonic() >= deadline:
+                msg = "memory_lock_timeout"
+                raise MemoryLockError(msg)
+            await asyncio.sleep(0.01)
+
+    def _evict_expired_lock(self, namespaced_key: str) -> None:
+        held_lock = self._locks.get(namespaced_key)
+        if held_lock is not None and held_lock.expires_at <= monotonic():
+            self._locks.pop(namespaced_key, None)
+
+    def _validate_user_key_label(self, key: str) -> None:
+        if ":" in key:
+            msg = "subagents must pass short key labels, not namespaced keys"
+            raise ValueError(msg)
 
 
 class InMemoryEventRepository(EventRepository):
@@ -78,10 +128,49 @@ class InMemoryMessageBusPublisher(MessageBusPublisher):
         self._messages.append({"topic": topic, "payload": payload})
 
 
-def _has_required_shape(data: dict[str, Any], shape: dict[str, Any]) -> bool:
-    required = set(shape.keys())
-    present = set(data.keys())
-    return required.issubset(present)
+class _HeldLock:
+    def __init__(self, owner_task_id: str, expires_at: float) -> None:
+        self.owner_task_id = owner_task_id
+        self.expires_at = expires_at
+
+
+def _build_namespaced_key(tenant_id: str, session_id: str, task_id: str, key: str) -> str:
+    return f"{tenant_id}:{session_id}:{task_id}:{key}"
+
+
+def _matches_return_spec_contract(data: dict[str, Any], shape: dict[str, Any]) -> bool:
+    """Validate minimal schema contract using required keys + common scalar type hints.
+
+    Why not full JSONSchema here: keep scaffold lightweight while still enforcing the
+    return-spec contract and preventing silently malformed memory writes.
+    """
+
+    for field, expected in shape.items():
+        if field not in data:
+            return False
+        if not _matches_expected_type(data[field], expected):
+            return False
+    return True
+
+
+def _matches_expected_type(value: Any, expected: Any) -> bool:
+    if not isinstance(expected, str):
+        return True
+
+    normalized = expected.lower().strip()
+    if normalized == "string":
+        return isinstance(value, str)
+    if normalized in {"int", "integer"}:
+        return isinstance(value, int) and not isinstance(value, bool)
+    if normalized in {"float", "number"}:
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if normalized in {"bool", "boolean"}:
+        return isinstance(value, bool)
+    if normalized.startswith("array"):
+        return isinstance(value, list)
+    if normalized in {"object", "dict", "map"}:
+        return isinstance(value, dict)
+    return True
 
 
 def event_to_dict(events: list[EventRecord]) -> list[dict[str, Any]]:

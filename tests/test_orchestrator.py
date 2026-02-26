@@ -254,9 +254,9 @@ class ReadTrackingMemoryRepository(CountingMemoryRepository):
         super().__init__()
         self.read_count = 0
 
-    async def read(self, namespaced_key: str) -> dict | None:
+    async def read(self, namespaced_key: str, release_lock: bool = False) -> dict | None:
         self.read_count += 1
-        return await super().read(namespaced_key)
+        return await super().read(namespaced_key, release_lock=release_lock)
 
 
 class CollectingMessageBus:

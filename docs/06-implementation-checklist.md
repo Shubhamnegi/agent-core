@@ -77,13 +77,13 @@ Use this checklist to track delivery against the Agentic Service Architecture Bl
 
 ## E. Memory and locking
 
-- [ ] Memory keys are auto-namespaced `{tenant}:{session}:{task}:{key}`.
-- [ ] Subagents never construct full namespaced keys manually.
-- [ ] `write_memory` enforces JSON-schema contract.
-- [ ] Invalid output returns `contract_violation` and no write occurs.
-- [ ] Optimistic lock is acquired per namespaced key on write.
-- [ ] Lock wait timeout behavior is implemented (`MemoryLockError`).
-- [ ] Lock release occurs after orchestrator read confirmation.
+- [x] Memory keys are auto-namespaced `{tenant}:{session}:{task}:{key}`.
+- [x] Subagents never construct full namespaced keys manually.
+- [x] `write_memory` enforces JSON-schema contract.
+- [x] Invalid output returns `contract_violation` and no write occurs.
+- [x] Optimistic lock is acquired per namespaced key on write.
+- [x] Lock wait timeout behavior is implemented (`MemoryLockError`).
+- [x] Lock release occurs after orchestrator read confirmation.
 
 ## F. Large-response handling
 
