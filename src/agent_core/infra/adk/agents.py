@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
 from typing import Any
 
 from google.adk.agents import BaseAgent
@@ -8,7 +9,7 @@ from google.genai import types
 
 
 class PlannerAgent(BaseAgent):
-    async def _run_async_impl(self, ctx: Any):
+    async def _run_async_impl(self, ctx: Any) -> AsyncGenerator[Event, None]:
         message = _extract_user_text(ctx)
         content = types.Content(
             role="model",
@@ -18,7 +19,7 @@ class PlannerAgent(BaseAgent):
 
 
 class ExecutorAgent(BaseAgent):
-    async def _run_async_impl(self, ctx: Any):
+    async def _run_async_impl(self, ctx: Any) -> AsyncGenerator[Event, None]:
         message = _extract_user_text(ctx)
         content = types.Content(
             role="model",
@@ -32,7 +33,7 @@ class ExecutorAgent(BaseAgent):
 
 
 class CoordinatorAgent(BaseAgent):
-    async def _run_async_impl(self, ctx: Any):
+    async def _run_async_impl(self, ctx: Any) -> AsyncGenerator[Event, None]:
         message = _extract_user_text(ctx)
         content = types.Content(
             role="model",

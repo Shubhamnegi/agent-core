@@ -6,6 +6,7 @@ from typing import Any
 from agent_core.application.ports import (
     EventRepository,
     MemoryRepository,
+    MessageBusPublisher,
     PlanRepository,
     SoulRepository,
 )
@@ -67,6 +68,14 @@ class InMemorySoulRepository(SoulRepository):
     async def upsert(self, tenant_id: str, user_id: str | None, payload: dict) -> None:
         key = f"{tenant_id}:{user_id or '*'}"
         self._souls[key] = payload
+
+
+class InMemoryMessageBusPublisher(MessageBusPublisher):
+    def __init__(self) -> None:
+        self._messages: list[dict[str, Any]] = []
+
+    async def publish(self, topic: str, payload: dict[str, Any]) -> None:
+        self._messages.append({"topic": topic, "payload": payload})
 
 
 def _has_required_shape(data: dict[str, Any], shape: dict[str, Any]) -> bool:

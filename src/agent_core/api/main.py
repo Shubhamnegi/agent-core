@@ -16,6 +16,7 @@ from agent_core.domain.models import AgentRunRequest
 from agent_core.infra.adapters.in_memory import (
     InMemoryEventRepository,
     InMemoryMemoryRepository,
+    InMemoryMessageBusPublisher,
     InMemoryPlanRepository,
     InMemorySoulRepository,
     event_to_dict,
@@ -36,6 +37,7 @@ class Container:
         self.plan_repo = InMemoryPlanRepository()
         self.memory_repo = InMemoryMemoryRepository()
         self.event_repo = InMemoryEventRepository()
+        self.message_bus = InMemoryMessageBusPublisher()
         self.soul_repo = InMemorySoulRepository()
         self.adk_runtime = AdkRuntimeScaffold(app_name=settings.app_name)
         self.orchestrator = AgentOrchestrator(
@@ -44,6 +46,7 @@ class Container:
             plan_repo=self.plan_repo,
             memory_repo=self.memory_repo,
             event_repo=self.event_repo,
+            message_bus=self.message_bus,
             max_steps=settings.max_plan_steps,
             max_replans=settings.max_replans,
         )
@@ -102,7 +105,11 @@ async def run_agent(
         else:
             result = await container.orchestrator.run(request_model)
     except ReplanLimitReachedError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=422,
+            detail=exc.failure_response
+            or {"status": "failed", "reason": str(exc)},
+        ) from exc
 
     return AgentRunResult(status=result.status, response=result.response, plan_id=result.plan_id)
 

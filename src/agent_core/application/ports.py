@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Any, Protocol
 
 from agent_core.domain.models import (
     AgentRunRequest,
@@ -66,6 +66,11 @@ class EventRepository(Protocol):
         ...
 
     async def list_by_plan(self, plan_id: str) -> list[EventRecord]:
+        ...
+
+
+class MessageBusPublisher(Protocol):
+    async def publish(self, topic: str, payload: dict[str, Any]) -> None:
         ...
 
 

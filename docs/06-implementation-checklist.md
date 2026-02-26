@@ -46,7 +46,7 @@ Use this checklist to track delivery against the Agentic Service Architecture Bl
 - [ ] Orchestrator never calls skills directly.
 - [ ] SubAgent-B executes exactly one step per task.
 - [ ] SubAgents cannot spawn subagents (enforced guardrail).
-- [ ] `status: insufficient` response is supported and tested.
+- [x] `status: insufficient` response is supported and tested.
 - [ ] Infra tool suite is always available to subagents.
 
 ## B. Planning and plan constraints
@@ -60,20 +60,20 @@ Use this checklist to track delivery against the Agentic Service Architecture Bl
 
 ## C. Execution loop and step contracts
 
-- [ ] Orchestrator iterates steps in sequence with status transitions.
-- [ ] Step output is validated against `return_spec`.
-- [ ] Valid step output is written through `write_memory` only.
-- [ ] Step completion/failure is emitted to message bus.
-- [ ] Final response synthesizes from memory outputs.
+- [x] Orchestrator iterates steps in sequence with status transitions.
+- [x] Step output is validated against `return_spec`.
+- [x] Valid step output is written through `write_memory` only.
+- [x] Step completion/failure is emitted to message bus.
+- [x] Final response synthesizes from memory outputs.
 
 ## D. Replanning behavior
 
-- [ ] Replan triggers on `insufficient`, step failure, or contract violation.
-- [ ] Replan payload includes completed steps + failed step context.
-- [ ] Replanning revises only remaining steps.
-- [ ] Completed steps remain preserved and reusable.
-- [ ] Replan attempts are capped at 3.
-- [ ] Exhausted replans return structured failure response.
+- [x] Replan triggers on `insufficient`, step failure, or contract violation.
+- [x] Replan payload includes completed steps + failed step context.
+- [x] Replanning revises only remaining steps.
+- [x] Completed steps remain preserved and reusable.
+- [x] Replan attempts are capped at 3.
+- [x] Exhausted replans return structured failure response.
 
 ## E. Memory and locking
 
