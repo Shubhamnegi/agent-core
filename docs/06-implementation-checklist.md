@@ -21,7 +21,7 @@ Use this checklist to track delivery against the Agentic Service Architecture Bl
 - [x] Callback hook scaffold file added for ADK tool guardrails (`before_tool`, `after_tool`, `on_tool_error`).
 - [ ] OpenSearch-backed adapters and schema-enforced writes wired (currently in-memory adapters).
 - [ ] Redis Streams wiring for lifecycle events/cancellation tokens.
-- [ ] Full large-response pipeline (`write_temp` -> `read_lines` -> `exec_python`) wired.
+- [x] Full large-response pipeline (`write_temp` -> `read_lines` -> `exec_python`) wired.
 - [ ] Full acceptance checklist below completed.
 
 ## ADK alignment gates (from component mapping)
@@ -87,14 +87,14 @@ Use this checklist to track delivery against the Agentic Service Architecture Bl
 
 ## F. Large-response handling
 
-- [ ] Content-length gate threshold is implemented (e.g., 50KB).
-- [ ] Large payload path uses `write_temp` -> `read_lines` -> `exec_python`.
-- [ ] Extraction scripts target only `return_spec` fields.
-- [ ] `exec_python` runs sandboxed (no network, temp-dir only).
-- [ ] `exec_python` timeout limit is enforced (default 30s).
-- [ ] `exec_python` output size limit is enforced (500KB).
-- [ ] Script hash is logged to `agent_events`.
-- [ ] Temp files are cleaned on task completion + fallback sweep.
+- [x] Content-length gate threshold is implemented (e.g., 50KB).
+- [x] Large payload path uses `write_temp` -> `read_lines` -> `exec_python`.
+- [x] Extraction scripts target only `return_spec` fields.
+- [x] `exec_python` runs sandboxed (no network, temp-dir only).
+- [x] `exec_python` timeout limit is enforced (default 30s).
+- [x] `exec_python` output size limit is enforced (500KB).
+- [x] Script hash is logged to `agent_events`.
+- [x] Temp files are cleaned on task completion + fallback sweep.
 
 ## G. OpenSearch and storage adapter
 
