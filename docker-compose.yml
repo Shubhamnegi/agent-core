@@ -1,0 +1,48 @@
+services:
+  agent-core:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: uv run uvicorn agent_core.api.main:app --host 0.0.0.0 --port 8000 --reload
+    env_file:
+      - .env
+    environment:
+      AGENT_OPENSEARCH_URL: http://opensearch:9200
+      AGENT_REDIS_URL: redis://redis:6379/0
+      AGENT_SKILL_SERVICE_URL: http://mock-skill-service:8081
+    volumes:
+      - ./:/app
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+      - opensearch
+      - mock-skill-service
+
+  redis:
+    image: redis:7.4-alpine
+    ports:
+      - "6379:6379"
+
+  opensearch:
+    image: opensearchproject/opensearch:2.17.1
+    environment:
+      discovery.type: single-node
+      DISABLE_SECURITY_PLUGIN: "true"
+      OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    ports:
+      - "9200:9200"
+      - "9600:9600"
+
+  mock-skill-service:
+    image: ghcr.io/wiremock/wiremock:3.9.1
+    command: ["--port", "8081", "--verbose"]
+    ports:
+      - "8081:8081"
