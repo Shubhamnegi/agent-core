@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from typing import Any
 
-from google.adk.agents import BaseAgent
+from google.adk.agents import BaseAgent, LlmAgent
 from google.adk.events import Event
 from google.genai import types
 
@@ -32,21 +32,47 @@ class ExecutorAgent(BaseAgent):
         yield Event(author=self.name, content=content)
 
 
-class CoordinatorAgent(BaseAgent):
-    async def _run_async_impl(self, ctx: Any) -> AsyncGenerator[Event, None]:
-        message = _extract_user_text(ctx)
-        content = types.Content(
-            role="model",
-            parts=[
-                types.Part(
-                    text=(
-                        "adk_scaffold_response: coordinator path active; "
-                        f"request='{message[:120]}'"
-                    )
-                )
-            ],
-        )
-        yield Event(author=self.name, content=content)
+def build_coordinator_agent(
+    planner: BaseAgent,
+    executor: BaseAgent,
+) -> LlmAgent:
+    return LlmAgent(
+        name="orchestrator_manager",
+        description="Manager role scaffold",
+        model="gemini-2.0-flash",
+        instruction=(
+            "ADK scaffold coordinator. Delegate planning/execution via sub-agents and "
+            "emit concise response summaries."
+        ),
+        sub_agents=[planner, executor],
+    )
+
+
+def build_planner_agent(mcp_toolset: Any | None = None) -> LlmAgent:
+    tools = [mcp_toolset] if mcp_toolset is not None else []
+    return LlmAgent(
+        name="planner_subagent_a",
+        description="Planner role scaffold",
+        model="gemini-2.0-flash",
+        instruction=(
+            "Use MCP discovery tools to identify and load relevant skills, then "
+            "produce concise planning guidance."
+        ),
+        tools=tools,
+    )
+
+
+def build_executor_agent(mcp_toolset: Any | None = None) -> LlmAgent:
+    tools = [mcp_toolset] if mcp_toolset is not None else []
+    return LlmAgent(
+        name="executor_subagent_b",
+        description="Executor role scaffold",
+        model="gemini-2.0-flash",
+        instruction=(
+            "Use only allowed MCP skills for this step and return concise execution output."
+        ),
+        tools=tools,
+    )
 
 
 def _extract_user_text(ctx: Any) -> str:

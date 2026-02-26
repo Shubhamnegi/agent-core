@@ -12,5 +12,6 @@ class Settings(BaseSettings):
     opensearch_url: str = "http://localhost:9200"
     redis_url: str = "redis://localhost:6379/0"
     skill_service_url: str = "http://localhost:8081"
+    mcp_server_url: str | None = None
 
     model_config = SettingsConfigDict(env_prefix="AGENT_", env_file=".env", extra="ignore")

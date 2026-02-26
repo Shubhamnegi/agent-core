@@ -26,18 +26,17 @@ Use this checklist to track delivery against the Agentic Service Architecture Bl
 
 ## ADK alignment gates (from component mapping)
 
-- [ ] Root coordinator is an ADK `LlmAgent` with planner/executor sub-agent composition.
-- [ ] Root coordinator is an ADK `LlmAgent` with planner/executor sub-agent composition.
+- [x] Root coordinator is an ADK `LlmAgent` with planner/executor sub-agent composition.
 - [x] Deterministic execution shell scaffold uses ADK `SequentialAgent`.
-- [ ] Bounded replan scaffold with ADK `LoopAgent` is wired in execution path.
+- [x] Bounded replan scaffold with ADK `LoopAgent` is wired in execution path.
 - [x] Service run loop scaffold is backed by ADK `InMemoryRunner`.
-- [ ] Session lifecycle uses ADK `SessionService` abstraction.
-- [ ] Cross-session retrieval uses ADK `MemoryService` abstraction.
+- [x] Session lifecycle uses ADK `SessionService` abstraction.
+- [x] Cross-session retrieval uses ADK `MemoryService` abstraction.
 - [x] Infra operation scaffold functions added for ADK tool wrapping.
-- [ ] Skill execution/discovery uses ADK `McpToolset` with per-step `tool_filter`.
+- [x] Skill execution/discovery uses ADK `McpToolset` with per-step `tool_filter`.
 - [x] Contract guardrail callback scaffold added (`before_tool` / `after_tool` / error hooks).
-- [ ] ADK event stream is mirrored into `agent_events` with lineage (`tenant_id`, `session_id`, `plan_id`, `task_id`).
-- [ ] ADK migration preserves existing API boundary (`POST /agent/run`) and storage adapter boundary.
+- [x] ADK event stream is mirrored into `agent_events` with lineage (`tenant_id`, `session_id`, `plan_id`, `task_id`).
+- [x] ADK migration preserves existing API boundary (`POST /agent/run`) and storage adapter boundary.
 
 ## A. Four-role model and authority boundaries
 

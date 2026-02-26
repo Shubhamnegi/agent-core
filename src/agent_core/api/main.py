@@ -39,7 +39,12 @@ class Container:
         self.event_repo = InMemoryEventRepository()
         self.message_bus = InMemoryMessageBusPublisher()
         self.soul_repo = InMemorySoulRepository()
-        self.adk_runtime = AdkRuntimeScaffold(app_name=settings.app_name)
+        self.adk_runtime = AdkRuntimeScaffold(
+            app_name=settings.app_name,
+            max_replans=settings.max_replans,
+            mcp_server_url=settings.mcp_server_url,
+            event_repo=self.event_repo,
+        )
         self.orchestrator = AgentOrchestrator(
             planner=MockPlannerAgent(),
             executor=MockExecutorAgent(),
