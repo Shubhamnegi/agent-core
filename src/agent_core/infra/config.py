@@ -22,5 +22,6 @@ class Settings(BaseSettings):
     skill_service_url: str = "http://localhost:8081"
     skill_service_key: str | None = None
     mcp_config_path: str | None = "config/mcp_config.json"
+    mcp_session_timeout: float = 60.0
 
     model_config = SettingsConfigDict(env_prefix="AGENT_", env_file=".env", extra="ignore")

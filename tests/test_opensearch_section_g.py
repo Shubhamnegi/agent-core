@@ -25,19 +25,39 @@ from agent_core.infra.adapters.opensearch_schemas import (
 class _FakeIndicesClient:
     def __init__(self) -> None:
         self.created: dict[str, dict] = {}
+        self.create_conflicts: set[str] = set()
 
     def exists(self, index: str) -> bool:
         return index in self.created
 
     def create(self, index: str, body: dict) -> None:
+        if index in self.create_conflicts:
+            raise _FakeOpenSearchError(
+                status_code=400,
+                error="resource_already_exists_exception",
+                info={
+                    "status": 400,
+                    "error": {"type": "resource_already_exists_exception"},
+                },
+            )
         self.created[index] = body
 
 
 class _FakeIlmClient:
     def __init__(self) -> None:
         self.policies: dict[str, dict] = {}
+        self.force_put_conflict = False
 
     def put_policy(self, policy: str, body: dict) -> None:
+        if self.force_put_conflict:
+            raise _FakeOpenSearchError(
+                status_code=409,
+                error="resource_already_exists_exception",
+                info={
+                    "status": 409,
+                    "error": {"type": "resource_already_exists_exception"},
+                },
+            )
         self.policies[policy] = body
 
 
@@ -45,12 +65,26 @@ class _FakeTransportClient:
     def __init__(self, ilm: _FakeIlmClient) -> None:
         self._ilm = ilm
 
-    def perform_request(self, method: str, path: str, body: dict) -> None:
-        assert method == "PUT"
+    def perform_request(self, method: str, path: str, body: dict | None = None) -> dict | None:
         prefix = "/_plugins/_ism/policies/"
         assert path.startswith(prefix)
         policy_id = path.removeprefix(prefix)
+        if method == "GET":
+            if policy_id not in self._ilm.policies:
+                raise _FakeOpenSearchError(status_code=404, error="not_found", info={"status": 404})
+            return {"_id": policy_id}
+        assert method == "PUT"
+        assert body is not None
         self._ilm.put_policy(policy_id, body)
+        return None
+
+
+class _FakeOpenSearchError(Exception):
+    def __init__(self, status_code: int, error: str, info: dict) -> None:
+        self.status_code = status_code
+        self.error = error
+        self.info = info
+        super().__init__(f"status={status_code}, error={error}")
 
 
 class _FakeOpenSearchClient:
@@ -114,6 +148,28 @@ def test_section_g_index_manager_creates_all_indices_with_strict_mappings_and_il
                 definition["settings"]["index"]["plugins.index_state_management.policy_id"]
                 == EVENTS_ILM_POLICY
             )
+
+
+def test_section_g_index_manager_tolerates_policy_put_conflict_after_get_404() -> None:
+    client = _FakeOpenSearchClient()
+    client.ilm.force_put_conflict = True
+    manager = OpenSearchIndexManager(client=client, index_prefix="", embedding_dims=128)
+
+    manager.ensure_indices_and_policies()
+
+    assert set(client.indices.created.keys()) == set(ALL_INDEXES)
+
+
+def test_section_g_index_manager_tolerates_index_create_conflict_race() -> None:
+    client = _FakeOpenSearchClient()
+    client.indices.create_conflicts.add(INDEX_AGENT_MEMORY)
+    manager = OpenSearchIndexManager(client=client, index_prefix="", embedding_dims=128)
+
+    manager.ensure_indices_and_policies()
+
+    assert INDEX_AGENT_MEMORY not in client.indices.created
+    expected_other_indexes = set(ALL_INDEXES) - {INDEX_AGENT_MEMORY}
+    assert set(client.indices.created.keys()) == expected_other_indexes
 
 
 def test_section_g_local_schema_validation_raises_storage_schema_error() -> None:

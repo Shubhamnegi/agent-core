@@ -4,7 +4,7 @@ import pytest
 
 from agent_core.application.ports import ExecutorAgent
 from agent_core.application.services.orchestrator import AgentOrchestrator
-from agent_core.domain.exceptions import ReplanLimitReachedError
+from agent_core.domain.exceptions import PlanValidationError, ReplanLimitReachedError
 from agent_core.domain.models import (
     AgentRunRequest,
     Plan,
@@ -201,6 +201,13 @@ class ThreeStepRecordingPlanner(RecordingPlanner):
             )
         ]
         return PlannerOutput(steps=revised[:max_steps])
+
+
+class InvalidPlannerSchemaMock(MockPlannerAgent):
+    _SKILL_OUTPUT_SCHEMAS = {
+        "skill_intent_analyzer": {"intent"},
+        "skill_response_builder": {"wrong_key"},
+    }
 
 
 class FailStepTwoOnceTrackingExecutor(ExecutorAgent):
@@ -680,6 +687,31 @@ async def test_orchestrator_caps_replan_attempts_at_three() -> None:
     assert plans[0].status.value == "failed"
     assert plans[0].replan_count == 3
     assert len(plans[0].replan_history) == 3
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_fails_when_planner_return_spec_not_satisfiable() -> None:
+    service = AgentOrchestrator(
+        planner=InvalidPlannerSchemaMock(),
+        executor=MockExecutorAgent(),
+        plan_repo=InMemoryPlanRepository(),
+        memory_repo=InMemoryMemoryRepository(),
+        event_repo=InMemoryEventRepository(),
+        max_steps=10,
+        max_replans=1,
+    )
+    request = AgentRunRequest(
+        tenant_id="tenant_1",
+        user_id="user_1",
+        session_id="session_1",
+        message="normal request",
+    )
+
+    with pytest.raises(PlanValidationError) as exc_info:
+        await service.run(request)
+
+    assert exc_info.value.failure_response is not None
+    assert exc_info.value.failure_response["reason"] == "planner_return_spec_not_satisfiable"
 
 
 @pytest.mark.asyncio

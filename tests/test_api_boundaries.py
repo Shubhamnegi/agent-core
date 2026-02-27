@@ -3,6 +3,7 @@ from typing import Any
 from fastapi.testclient import TestClient
 
 from agent_core.api.main import app
+from agent_core.domain.exceptions import PlanValidationError
 from agent_core.domain.models import AgentRunResponse
 from agent_core.infra.adapters.in_memory import (
     InMemoryEventRepository,
@@ -112,3 +113,36 @@ def test_memory_query_uses_embedding_before_knn_search(monkeypatch: Any) -> None
     assert fake_embedding.calls == ["find latest summary"]
     assert fake_repo.last_query is not None
     assert fake_repo.last_query["query_vector"] == [0.01, 0.02, 0.03]
+
+
+def test_agent_run_returns_structured_failure_for_infeasible_plan(monkeypatch: Any) -> None:
+    monkeypatch.setenv("AGENT_STORAGE_BACKEND", "in_memory")
+    with TestClient(app) as client:
+        container = app.state.container
+
+        async def _raise_infeasible(_: Any) -> AgentRunResponse:
+            raise PlanValidationError(
+                "plan_infeasible_over_max_steps",
+                failure_response={
+                    "status": "failed",
+                    "reason": "plan_infeasible_over_max_steps",
+                    "max_steps": 10,
+                    "actual_steps": 11,
+                },
+            )
+
+        container.runtime_engine = "adk_scaffold"
+        container.adk_runtime.run = _raise_infeasible  # type: ignore[method-assign]
+
+        response = client.post(
+            "/agent/run",
+            json={
+                "tenant_id": "tenant_1",
+                "user_id": "user_1",
+                "session_id": "session_1",
+                "message": "hello",
+            },
+        )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["reason"] == "plan_infeasible_over_max_steps"

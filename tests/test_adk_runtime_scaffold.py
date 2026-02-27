@@ -8,6 +8,8 @@ from google.adk.agents import LlmAgent, LoopAgent, SequentialAgent
 from google.adk.tools.mcp_tool import McpToolset
 
 from agent_core.domain.models import AgentRunRequest
+from agent_core.infra.adk.agents import build_executor_agent, build_planner_agent
+from agent_core.infra.adk.callbacks import after_tool_callback, before_tool_callback
 from agent_core.infra.adk.runtime import AdkRuntimeScaffold
 
 
@@ -45,6 +47,13 @@ def _write_mcp_config(path: Path) -> None:
                         "env": "AGENT_SKILL_SERVICE_KEY",
                     }
                 ],
+            },
+            {
+                "name": "aws_cost_explorer",
+                "transport": "stdio",
+                "command": "uvx",
+                "args": ["awslabs.cost-explorer-mcp-server@latest"],
+                "stdio_env": {"FASTMCP_LOG_LEVEL": "ERROR", "AWS_PROFILE": "default"},
             }
         ],
     }
@@ -69,15 +78,29 @@ def test_adk_runtime_wires_mcp_toolset_filters_for_planner_and_executor_step(
 
     assert isinstance(runtime.planner_mcp_toolset, McpToolset)
     assert runtime.planner_mcp_toolset.tool_filter == ["find_relevant_skill", "load_instructions"]
-    assert runtime._resolved_endpoint is not None
-    assert runtime._resolved_endpoint.headers == {"x-api-key": "request-key"}
+    assert runtime._resolved_planner_endpoint is not None
+    assert runtime._resolved_planner_endpoint.headers == {"x-api-key": "request-key"}
+    assert len(runtime._resolved_executor_endpoints) == 2
 
     runtime.configure_executor_step_tools(["skill_sales", "skill_inventory"])
 
-    assert isinstance(runtime.executor_mcp_toolset, McpToolset)
-    assert runtime.executor_mcp_toolset.tool_filter == ["skill_sales", "skill_inventory"]
-    assert runtime._resolved_endpoint is not None
-    assert runtime._resolved_endpoint.headers == {"x-api-key": "request-key"}
+    assert len(runtime.executor_mcp_toolsets) == 2
+    assert all(
+        toolset.tool_filter == ["skill_sales", "skill_inventory"]
+        for toolset in runtime.executor_mcp_toolsets
+    )
+
+
+def test_adk_subagents_always_include_infra_tool_suite() -> None:
+    planner = build_planner_agent(mcp_toolset=None)
+    executor = build_executor_agent(mcp_toolsets=None)
+
+    planner_tools = {getattr(tool, "__name__", "") for tool in planner.tools}
+    executor_tools = {getattr(tool, "__name__", "") for tool in executor.tools}
+    expected = {"write_memory", "read_memory", "write_temp", "read_lines", "exec_python"}
+
+    assert expected.issubset(planner_tools)
+    assert expected.issubset(executor_tools)
 
 
 def test_adk_runtime_uses_env_fallback_key_when_request_header_missing(
@@ -96,8 +119,8 @@ def test_adk_runtime_uses_env_fallback_key_when_request_header_missing(
     runtime.configure_mcp_for_request({})
 
     assert isinstance(runtime.planner_mcp_toolset, McpToolset)
-    assert runtime._resolved_endpoint is not None
-    assert runtime._resolved_endpoint.headers == {"x-api-key": "fallback-key"}
+    assert runtime._resolved_planner_endpoint is not None
+    assert runtime._resolved_planner_endpoint.headers == {"x-api-key": "fallback-key"}
 
 
 class _FakeSessionService:
@@ -264,3 +287,34 @@ async def test_adk_runtime_mirrors_event_stream_with_lineage_fields() -> None:
     assert mirrored["task_id"] == "task_123"
     assert mirrored["payload"]["author"] == "orchestrator_manager"
     assert mirrored["payload"]["text_preview"] == "chunk"
+
+
+@pytest.mark.asyncio
+async def test_before_tool_callback_logs_tool_args_without_logrecord_collision(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    tool = SimpleNamespace(name="read_memory")
+    payload = {"key": "summary"}
+
+    with caplog.at_level("INFO"):
+        result = await before_tool_callback(tool=tool, args=payload, tool_context=None)
+
+    assert result is None
+    record = next(entry for entry in caplog.records if entry.msg == "tool_call_start")
+    assert getattr(record, "tool_args") == payload
+
+
+@pytest.mark.asyncio
+async def test_after_tool_callback_accepts_tool_response_keyword() -> None:
+    tool = SimpleNamespace(name="read_memory")
+
+    result = await after_tool_callback(
+        tool=tool,
+        args={"key": "summary"},
+        tool_context=None,
+        tool_response={"status": "ok", "value": {"summary": "ready"}},
+    )
+
+    assert result is not None
+    assert result["status"] == "ok"
+    assert result["tool_name"] == "read_memory"

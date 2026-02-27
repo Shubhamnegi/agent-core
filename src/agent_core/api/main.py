@@ -18,7 +18,7 @@ from agent_core.application.ports import (
     SoulRepository,
 )
 from agent_core.application.services.orchestrator import AgentOrchestrator
-from agent_core.domain.exceptions import ReplanLimitReachedError
+from agent_core.domain.exceptions import PlanValidationError, ReplanLimitReachedError
 from agent_core.domain.models import AgentRunRequest
 from agent_core.infra.adapters.embedding import AdkEmbeddingService, EmbeddingService
 from agent_core.infra.adapters.in_memory import (
@@ -106,6 +106,7 @@ class Container:
             skill_service_url=settings.skill_service_url,
             skill_service_key=settings.skill_service_key,
             event_repo=self.event_repo,
+            mcp_session_timeout=settings.mcp_session_timeout,
         )
         self.orchestrator = AgentOrchestrator(
             planner=MockPlannerAgent(),
@@ -173,11 +174,32 @@ async def run_agent(
             result = await container.adk_runtime.run(request_model)
         else:
             result = await container.orchestrator.run(request_model)
+    except PlanValidationError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=exc.failure_response
+            or {"status": "failed", "reason": str(exc)},
+        ) from exc
     except ReplanLimitReachedError as exc:
         raise HTTPException(
             status_code=422,
             detail=exc.failure_response
             or {"status": "failed", "reason": str(exc)},
+        ) from exc
+    except Exception as exc:
+        logger.exception(
+            "agent_run_unhandled_error",
+            extra={
+                "tenant_id": tenant_id,
+                "user_id": user_id,
+                "session_id": session_id,
+                "runtime_engine": container.runtime_engine,
+                "error_type": type(exc).__name__,
+            },
+        )
+        raise HTTPException(
+            status_code=500,
+            detail={"status": "failed", "reason": "internal_error"},
         ) from exc
 
     return AgentRunResult(status=result.status, response=result.response, plan_id=result.plan_id)

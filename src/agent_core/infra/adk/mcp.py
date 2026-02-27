@@ -129,8 +129,14 @@ def resolve_mcp_endpoint(
     )
 
 
-def build_planner_mcp_toolset(endpoint: ResolvedMcpEndpoint) -> McpToolset:
-    connection_params = _build_connection_params(endpoint)
+DEFAULT_MCP_SESSION_TIMEOUT: float = 60.0
+
+
+def build_planner_mcp_toolset(
+    endpoint: ResolvedMcpEndpoint,
+    timeout: float = DEFAULT_MCP_SESSION_TIMEOUT,
+) -> McpToolset:
+    connection_params = _build_connection_params(endpoint, timeout=timeout)
     return McpToolset(
         connection_params=connection_params,
         tool_filter=endpoint.planner_tools,
@@ -140,16 +146,52 @@ def build_planner_mcp_toolset(endpoint: ResolvedMcpEndpoint) -> McpToolset:
 def build_executor_mcp_toolset(
     endpoint: ResolvedMcpEndpoint,
     allowed_skills: list[str],
+    timeout: float = DEFAULT_MCP_SESSION_TIMEOUT,
 ) -> McpToolset:
-    connection_params = _build_connection_params(endpoint)
+    connection_params = _build_connection_params(endpoint, timeout=timeout)
     return McpToolset(
         connection_params=connection_params,
         tool_filter=allowed_skills,
     )
 
 
+def build_executor_mcp_toolsets(
+    endpoints: list[ResolvedMcpEndpoint],
+    allowed_skills: list[str],
+    timeout: float = DEFAULT_MCP_SESSION_TIMEOUT,
+) -> list[McpToolset]:
+    return [
+        build_executor_mcp_toolset(endpoint, allowed_skills, timeout=timeout)
+        for endpoint in endpoints
+    ]
+
+
+def resolve_mcp_endpoints(
+    config: dict[str, Any],
+    request_headers: dict[str, str],
+    env_values: dict[str, str],
+) -> list[ResolvedMcpEndpoint]:
+    endpoints = config.get("endpoints", [])
+    if not isinstance(endpoints, list):
+        return []
+
+    resolved: list[ResolvedMcpEndpoint] = []
+    for endpoint_config in endpoints:
+        if not isinstance(endpoint_config, dict):
+            continue
+        resolved.append(
+            resolve_mcp_endpoint(
+                endpoint_config=endpoint_config,
+                request_headers=request_headers,
+                env_values=env_values,
+            )
+        )
+    return resolved
+
+
 def _build_connection_params(
     endpoint: ResolvedMcpEndpoint,
+    timeout: float = DEFAULT_MCP_SESSION_TIMEOUT,
 ) -> StreamableHTTPConnectionParams | SseConnectionParams | StdioConnectionParams:
     if endpoint.transport == "stdio":
         if endpoint.command is None:
@@ -160,7 +202,8 @@ def _build_connection_params(
                 command=endpoint.command,
                 args=endpoint.args,
                 env=endpoint.stdio_env,
-            )
+            ),
+            timeout=timeout,
         )
 
     if endpoint.url is None:
@@ -168,5 +211,9 @@ def _build_connection_params(
         raise ValueError(msg)
 
     if endpoint.transport == "sse":
-        return SseConnectionParams(url=endpoint.url, headers=endpoint.headers)
-    return StreamableHTTPConnectionParams(url=endpoint.url, headers=endpoint.headers)
+        return SseConnectionParams(
+            url=endpoint.url, headers=endpoint.headers, timeout=timeout,
+        )
+    return StreamableHTTPConnectionParams(
+        url=endpoint.url, headers=endpoint.headers, timeout=timeout,
+    )

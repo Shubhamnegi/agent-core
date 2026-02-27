@@ -74,7 +74,11 @@ def build_index_definition(
                     "session_id": {"type": "keyword"},
                     "plan_id": {"type": "keyword"},
                     "task_id": {"type": "keyword"},
-                    "payload": {"type": "object", "enabled": True},
+                    "payload": {
+                        "type": "object",
+                        "enabled": True,
+                        "dynamic": True,
+                    },
                     "ts": {"type": "date"},
                 },
             },

@@ -43,22 +43,22 @@ Use this checklist to track delivery against the Agentic Service Architecture Bl
 
 ## A. Four-role model and authority boundaries
 
-- [ ] Orchestrator delegates planning to SubAgent-A only.
-- [ ] Orchestrator delegates step execution to SubAgent-B only.
-- [ ] Orchestrator never calls skills directly.
-- [ ] SubAgent-B executes exactly one step per task.
-- [ ] SubAgents cannot spawn subagents (enforced guardrail).
+- [x] Orchestrator delegates planning to SubAgent-A only.
+- [x] Orchestrator delegates step execution to SubAgent-B only.
+- [x] Orchestrator never calls skills directly.
+- [x] SubAgent-B executes exactly one step per task.
+- [x] SubAgents cannot spawn subagents (enforced guardrail).
 - [x] `status: insufficient` response is supported and tested.
-- [ ] Infra tool suite is always available to subagents.
+- [x] Infra tool suite is always available to subagents.
 
 ## B. Planning and plan constraints
 
 - [x] SubAgent-A uses `find_relevant_skill` for candidate discovery.
 - [x] SubAgent-A loads manifests via `load_instructions` for reranking.
-- [ ] SubAgent-A verifies each step `return_spec` against skill output schema.
-- [ ] Plan enforces max 10 steps.
-- [ ] Infeasible tasks (>10 steps) return structured failure.
-- [ ] Plan persisted as first-class object before execution loop.
+- [x] SubAgent-A verifies each step `return_spec` against skill output schema.
+- [x] Plan enforces max 10 steps.
+- [x] Infeasible tasks (>10 steps) return structured failure.
+- [x] Plan persisted as first-class object before execution loop.
 
 ## C. Execution loop and step contracts
 

@@ -8,6 +8,8 @@ from time import monotonic
 from typing import Any
 from uuid import uuid4
 
+from opensearchpy.exceptions import NotFoundError, RequestError
+
 from agent_core.application.ports import (
     EventRepository,
     MemoryRepository,
@@ -54,11 +56,24 @@ class OpenSearchIndexManager:
 
     def ensure_indices_and_policies(self) -> None:
         # Why policy first: event index creation references ILM policy name in its settings.
-        self.client.transport.perform_request(
-            "PUT",
-            f"/_plugins/_ism/policies/{EVENTS_ILM_POLICY}",
-            body=build_events_ilm_policy(self.events_retention_days),
-        )
+        # Use GET first, then create-on-404; conflicts during create are treated as race-safe success.
+        try:
+            self.client.transport.perform_request(
+                "GET",
+                f"/_plugins/_ism/policies/{EVENTS_ILM_POLICY}",
+            )
+        except Exception as exc:
+            if not _is_not_found_error(exc):
+                raise
+            try:
+                self.client.transport.perform_request(
+                    "PUT",
+                    f"/_plugins/_ism/policies/{EVENTS_ILM_POLICY}",
+                    body=build_events_ilm_policy(self.events_retention_days),
+                )
+            except Exception as put_exc:
+                if not _is_already_exists_conflict(put_exc):
+                    raise
 
         for base_index in ALL_INDEXES:
             resolved = resolve_index_name(base_index, self.index_prefix)
@@ -69,7 +84,11 @@ class OpenSearchIndexManager:
                 index_name=base_index,
                 embedding_dims=self.embedding_dims,
             )
-            self.client.indices.create(index=resolved, body=definition)
+            try:
+                self.client.indices.create(index=resolved, body=definition)
+            except Exception as exc:
+                if not _is_already_exists_conflict(exc):
+                    raise
 
 
 class OpenSearchPlanRepository(PlanRepository):
@@ -521,3 +540,59 @@ def _parse_iso_datetime(value: Any) -> datetime:
 
 def _utc_now_iso() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _is_not_found_error(exc: Exception) -> bool:
+    if isinstance(exc, NotFoundError):
+        return True
+    return _extract_status_code(exc) == 404
+
+
+def _is_already_exists_conflict(exc: Exception) -> bool:
+    if isinstance(exc, RequestError) and _extract_status_code(exc) == 409:
+        return True
+
+    error_type = _extract_error_type(exc)
+    if error_type == "resource_already_exists_exception":
+        return True
+
+    error_text = str(exc).lower()
+    return "resource_already_exists_exception" in error_text
+
+
+def _extract_status_code(exc: Exception) -> int | None:
+    status_code = getattr(exc, "status_code", None)
+    if isinstance(status_code, int):
+        return status_code
+
+    info = getattr(exc, "info", None)
+    if isinstance(info, dict):
+        status = info.get("status")
+        if isinstance(status, int):
+            return status
+    return None
+
+
+def _extract_error_type(exc: Exception) -> str | None:
+    error = getattr(exc, "error", None)
+    if isinstance(error, str) and error:
+        return error
+
+    info = getattr(exc, "info", None)
+    if not isinstance(info, dict):
+        return None
+
+    error_payload = info.get("error")
+    if isinstance(error_payload, dict):
+        err_type = error_payload.get("type")
+        if isinstance(err_type, str) and err_type:
+            return err_type
+        root_cause = error_payload.get("root_cause")
+        if isinstance(root_cause, list):
+            for item in root_cause:
+                if not isinstance(item, dict):
+                    continue
+                item_type = item.get("type")
+                if isinstance(item_type, str) and item_type:
+                    return item_type
+    return None

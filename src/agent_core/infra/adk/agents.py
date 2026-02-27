@@ -7,13 +7,35 @@ from google.adk.agents import BaseAgent, LlmAgent
 from google.adk.events import Event
 from google.genai import types
 
+from agent_core.infra.adk.callbacks import (
+    after_model_callback,
+    after_tool_callback,
+    before_model_callback,
+    before_tool_callback,
+    on_tool_error_callback,
+)
+from agent_core.infra.adk.tools import (
+    exec_python,
+    read_lines,
+    read_memory,
+    write_memory,
+    write_temp,
+)
+from agent_core.prompts import (
+    COORDINATOR_INSTRUCTION,
+    EXECUTOR_INSTRUCTION,
+    EXECUTOR_SCAFFOLD_PREFIX,
+    PLANNER_INSTRUCTION,
+    PLANNER_SCAFFOLD_PREFIX,
+)
+
 
 class PlannerAgent(BaseAgent):
     async def _run_async_impl(self, ctx: Any) -> AsyncGenerator[Event, None]:
         message = _extract_user_text(ctx)
         content = types.Content(
             role="model",
-            parts=[types.Part(text=f"planner_scaffold: analyzed request '{message[:80]}'")],
+            parts=[types.Part(text=f"{PLANNER_SCAFFOLD_PREFIX} '{message[:80]}'")],
         )
         yield Event(author=self.name, content=content)
 
@@ -25,7 +47,7 @@ class ExecutorAgent(BaseAgent):
             role="model",
             parts=[
                 types.Part(
-                    text=f"executor_scaffold: prepared step output for '{message[:80]}'"
+                    text=f"{EXECUTOR_SCAFFOLD_PREFIX} '{message[:80]}'"
                 )
             ],
         )
@@ -41,11 +63,13 @@ def build_coordinator_agent(
         name="orchestrator_manager",
         description="Manager role scaffold",
         model=model_name,
-        instruction=(
-            "ADK scaffold coordinator. Delegate planning/execution via sub-agents and "
-            "emit concise response summaries."
-        ),
+        instruction=COORDINATOR_INSTRUCTION,
         sub_agents=[planner, executor],
+        before_model_callback=before_model_callback,
+        after_model_callback=after_model_callback,
+        before_tool_callback=before_tool_callback,
+        after_tool_callback=after_tool_callback,
+        on_tool_error_callback=on_tool_error_callback,
     )
 
 
@@ -53,32 +77,41 @@ def build_planner_agent(
     mcp_toolset: Any | None = None,
     model_name: str = "models/gemini-flash-lite-latest",
 ) -> LlmAgent:
-    tools = [mcp_toolset] if mcp_toolset is not None else []
+    tools: list[Any] = _infra_tools()
+    if mcp_toolset is not None:
+        tools.append(mcp_toolset)
     return LlmAgent(
         name="planner_subagent_a",
         description="Planner role scaffold",
         model=model_name,
-        instruction=(
-            "Use MCP discovery tools to identify and load relevant skills, then "
-            "produce concise planning guidance."
-        ),
+        instruction=PLANNER_INSTRUCTION,
         tools=tools,
+        before_model_callback=before_model_callback,
+        after_model_callback=after_model_callback,
+        before_tool_callback=before_tool_callback,
+        after_tool_callback=after_tool_callback,
+        on_tool_error_callback=on_tool_error_callback,
     )
 
 
 def build_executor_agent(
-    mcp_toolset: Any | None = None,
+    mcp_toolsets: list[Any] | None = None,
     model_name: str = "models/gemini-flash-lite-latest",
 ) -> LlmAgent:
-    tools = [mcp_toolset] if mcp_toolset is not None else []
+    tools: list[Any] = _infra_tools()
+    if mcp_toolsets is not None:
+        tools.extend(mcp_toolsets)
     return LlmAgent(
         name="executor_subagent_b",
         description="Executor role scaffold",
         model=model_name,
-        instruction=(
-            "Use only allowed MCP skills for this step and return concise execution output."
-        ),
+        instruction=EXECUTOR_INSTRUCTION,
         tools=tools,
+        before_model_callback=before_model_callback,
+        after_model_callback=after_model_callback,
+        before_tool_callback=before_tool_callback,
+        after_tool_callback=after_tool_callback,
+        on_tool_error_callback=on_tool_error_callback,
     )
 
 
@@ -90,3 +123,7 @@ def _extract_user_text(ctx: Any) -> str:
     if not parts:
         return ""
     return getattr(parts[0], "text", "") or ""
+
+
+def _infra_tools() -> list[Any]:
+    return [write_memory, read_memory, write_temp, read_lines, exec_python]

@@ -22,6 +22,7 @@ Core service to handle agentic orchestration.
 - `src/agent_core/application`: ports and orchestrator use-case
 - `src/agent_core/infra`: adapters, mock subagents, config, logging
 - `src/agent_core/api`: FastAPI endpoints and request schemas
+- `src/agent_core/prompts`: centralized agent prompt templates/constants
 
 # Quick start (uv + venv)
 

@@ -6,7 +6,9 @@ class AgentCoreError(Exception):
 
 
 class PlanValidationError(AgentCoreError):
-    pass
+    def __init__(self, message: str, failure_response: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.failure_response = failure_response
 
 
 class ReplanLimitReachedError(AgentCoreError):
