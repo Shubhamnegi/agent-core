@@ -19,6 +19,7 @@ from agent_core.infra.adk.agents import (
     build_executor_agent,
     build_planner_agent,
 )
+from agent_core.infra.adk.callbacks import bind_trace_context, reset_trace_context
 from agent_core.infra.adk.mcp import (
     ResolvedMcpEndpoint,
     build_executor_mcp_toolsets,
@@ -135,6 +136,14 @@ class AdkRuntimeScaffold:
     async def run(self, request: AgentRunRequest) -> AgentRunResponse:
         await self._ensure_session(request)
         plan_id = f"plan_adk_{uuid4().hex[:12]}"
+        trace_token = None
+        if self.event_repo is not None:
+            trace_token = bind_trace_context(
+                event_repo=self.event_repo,
+                tenant_id=request.tenant_id,
+                session_id=request.session_id,
+                plan_id=plan_id,
+            )
         events = self.runner.run_async(
             user_id=request.user_id,
             session_id=request.session_id,
@@ -175,6 +184,9 @@ class AdkRuntimeScaffold:
                 },
             )
             raise
+        finally:
+            if trace_token is not None:
+                reset_trace_context(trace_token)
 
     async def search_cross_session_memory(self, user_id: str, query: str) -> Any:
         if self.memory_service is None:

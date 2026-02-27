@@ -111,6 +111,7 @@ Use this checklist to track delivery against the Agentic Service Architecture Bl
 ## H. Monitoring and alerts
 
 - [ ] Full session trace queryable by `session_id`.
+- [x] Prompt snapshots and LLM raw response payloads are persisted to `agent_events` with `tenant_id`/`session_id`/`plan_id` lineage.
 - [ ] Subagent internal events are emitted with required fields.
 - [ ] Every skill call has audit lineage + size + duration.
 - [ ] Plan health dashboard includes all required metrics.

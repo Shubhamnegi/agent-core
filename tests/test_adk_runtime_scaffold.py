@@ -9,7 +9,14 @@ from google.adk.tools.mcp_tool import McpToolset
 
 from agent_core.domain.models import AgentRunRequest
 from agent_core.infra.adk.agents import build_executor_agent, build_planner_agent
-from agent_core.infra.adk.callbacks import after_tool_callback, before_tool_callback
+from agent_core.infra.adk.callbacks import (
+    after_model_callback,
+    after_tool_callback,
+    before_model_callback,
+    before_tool_callback,
+    bind_trace_context,
+    reset_trace_context,
+)
 from agent_core.infra.adk.runtime import AdkRuntimeScaffold
 
 
@@ -318,3 +325,42 @@ async def test_after_tool_callback_accepts_tool_response_keyword() -> None:
     assert result is not None
     assert result["status"] == "ok"
     assert result["tool_name"] == "read_memory"
+
+
+@pytest.mark.asyncio
+async def test_model_callbacks_persist_prompt_and_response_events_with_trace_context() -> None:
+    fake_event_repo = _FakeEventRepository()
+    token = bind_trace_context(
+        event_repo=fake_event_repo,  # type: ignore[arg-type]
+        tenant_id="tenant_1",
+        session_id="session_1",
+        plan_id="plan_adk_trace_1",
+    )
+    try:
+        callback_context = SimpleNamespace(agent_name="planner_subagent_a", invocation_id="task_1")
+
+        llm_request = SimpleNamespace(
+            model="gemini-2.5-flash",
+            contents=[SimpleNamespace(parts=[SimpleNamespace(text="what is aws bill?")])],
+            config=None,
+            tools_dict={"find_relevant_skill": object()},
+        )
+        await before_model_callback(callback_context, llm_request)
+
+        llm_response = SimpleNamespace(
+            content=SimpleNamespace(parts=[SimpleNamespace(text="bill is 137.13")]),
+            model_version="gemini-2.5-flash",
+            finish_reason=None,
+            error_code=None,
+            error_message=None,
+        )
+        await after_model_callback(callback_context, llm_response)
+    finally:
+        reset_trace_context(token)
+
+    event_types = [event["event_type"] for event in fake_event_repo.events]
+    assert "adk.prompt" in event_types
+    assert "adk.llm_response" in event_types
+    for event in fake_event_repo.events:
+        assert event["plan_id"] == "plan_adk_trace_1"
+        assert event["session_id"] == "session_1"

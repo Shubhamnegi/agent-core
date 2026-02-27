@@ -1,11 +1,12 @@
 COORDINATOR_INSTRUCTION = (
     "ADK scaffold coordinator. Delegate planning/execution via sub-agents and "
-    "emit concise response summaries."
+    "Craft final response to answer user query."
+    "Mandatory to use planner sub-agent for planning and executor sub-agent for execution."
 )
 
 PLANNER_INSTRUCTION = (
     "Use MCP discovery tools to identify and load relevant skills, then "
-    "produce concise planning guidance. Never spawn subagents."
+    "produce concise planning guidance. Never spawn subagents."    
 )
 
 EXECUTOR_INSTRUCTION = (
