@@ -17,14 +17,12 @@ from agent_core.application.ports import (
     PlanRepository,
     SoulRepository,
 )
-from agent_core.application.services.orchestrator import AgentOrchestrator
 from agent_core.domain.exceptions import PlanValidationError, ReplanLimitReachedError
 from agent_core.domain.models import AgentRunRequest
 from agent_core.infra.adapters.embedding import AdkEmbeddingService, EmbeddingService
 from agent_core.infra.adapters.in_memory import (
     InMemoryEventRepository,
     InMemoryMemoryRepository,
-    InMemoryMessageBusPublisher,
     InMemoryPlanRepository,
     InMemorySoulRepository,
     event_to_dict,
@@ -37,8 +35,6 @@ from agent_core.infra.adapters.opensearch import (
     OpenSearchSoulRepository,
 )
 from agent_core.infra.adk.runtime import AdkRuntimeScaffold
-from agent_core.infra.agents.mock_executor import MockExecutorAgent
-from agent_core.infra.agents.mock_planner import MockPlannerAgent
 from agent_core.infra.config import Settings
 from agent_core.infra.logging import configure_logging, request_id_ctx
 
@@ -48,8 +44,6 @@ logger = logging.getLogger(__name__)
 class Container:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self.runtime_engine = settings.runtime_engine
-        self.message_bus = InMemoryMessageBusPublisher()
         self.plan_repo: PlanRepository
         self.memory_repo: MemoryRepository
         self.event_repo: EventRepository
@@ -106,17 +100,9 @@ class Container:
             skill_service_url=settings.skill_service_url,
             skill_service_key=settings.skill_service_key,
             event_repo=self.event_repo,
-            mcp_session_timeout=settings.mcp_session_timeout,
-        )
-        self.orchestrator = AgentOrchestrator(
-            planner=MockPlannerAgent(),
-            executor=MockExecutorAgent(),
-            plan_repo=self.plan_repo,
             memory_repo=self.memory_repo,
-            event_repo=self.event_repo,
-            message_bus=self.message_bus,
-            max_steps=settings.max_plan_steps,
-            max_replans=settings.max_replans,
+            embedding_service=self.embedding_service,
+            mcp_session_timeout=settings.mcp_session_timeout,
         )
 
 
@@ -169,11 +155,8 @@ async def run_agent(
 
     container = cast(Container, app.state.container)
     try:
-        if container.runtime_engine == "adk_scaffold":
-            container.adk_runtime.configure_mcp_for_request(dict(request.headers))
-            result = await container.adk_runtime.run(request_model)
-        else:
-            result = await container.orchestrator.run(request_model)
+        container.adk_runtime.configure_mcp_for_request(dict(request.headers))
+        result = await container.adk_runtime.run(request_model)
     except PlanValidationError as exc:
         raise HTTPException(
             status_code=422,
@@ -193,7 +176,6 @@ async def run_agent(
                 "tenant_id": tenant_id,
                 "user_id": user_id,
                 "session_id": session_id,
-                "runtime_engine": container.runtime_engine,
                 "error_type": type(exc).__name__,
             },
         )

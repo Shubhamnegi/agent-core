@@ -5,7 +5,6 @@ class Settings(BaseSettings):
     app_name: str = "agent-core"
     environment: str = "local"
     log_level: str = "INFO"
-    runtime_engine: str = "adk_scaffold"
     model_name: str = "models/gemini-flash-lite-latest"
     max_plan_steps: int = 10
     max_replans: int = 3

@@ -25,7 +25,6 @@ def test_agent_run_boundary_is_preserved_and_subagents_endpoint_absent(monkeypat
                 plan_id="plan_adk_test",
             )
 
-        container.runtime_engine = "adk_scaffold"
         container.adk_runtime.run = _fake_run  # type: ignore[method-assign]
 
         response = client.post(
@@ -131,7 +130,6 @@ def test_agent_run_returns_structured_failure_for_infeasible_plan(monkeypatch: A
                 },
             )
 
-        container.runtime_engine = "adk_scaffold"
         container.adk_runtime.run = _raise_infeasible  # type: ignore[method-assign]
 
         response = client.post(

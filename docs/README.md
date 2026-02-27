@@ -14,6 +14,7 @@ This folder breaks down the Agentic Service Architecture Blueprint v3.0 into imp
 8. [Scaffold Design Pattern Notes](./08-scaffold-design-pattern.md)
 9. [Google ADK One-to-One Component Mapping](./09-adk-component-mapping.md)
 10. [Agentic and Integration Flow (Mermaid)](./10-agentic-and-integration-flow-mermaid.md)
+11. [ADK-Only Runtime Migration Checklist](./11-adk-only-migration-checklist.md)
 
 ## How to use
 

@@ -1,13 +1,20 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 import json
 import multiprocessing
+from contextvars import ContextVar, Token
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
 from tempfile import NamedTemporaryFile, gettempdir
 from typing import Any
+from uuid import uuid4
+
+from agent_core.application.ports import MemoryRepository
+from agent_core.infra.adapters.embedding import EmbeddingService
 
 DEFAULT_LARGE_RESPONSE_THRESHOLD_BYTES = 50 * 1024
 DEFAULT_EXEC_PYTHON_TIMEOUT_SECONDS = 30
@@ -17,12 +24,198 @@ _TEMP_FILE_REGISTRY: dict[str, datetime] = {}
 _AGENT_EVENTS: list[dict[str, Any]] = []
 
 
-def write_memory(key: str, data: dict[str, Any], return_spec: dict[str, Any]) -> dict[str, Any]:
-    return {"status": "scaffold", "key": key, "validated": bool(return_spec), "data": data}
+@dataclass(slots=True)
+class _ToolRuntimeContext:
+    tenant_id: str
+    user_id: str
+    session_id: str
+    plan_id: str
+    memory_repo: MemoryRepository | None
+    embedding_service: EmbeddingService | None
 
 
-def read_memory(namespaced_key: str) -> dict[str, Any]:
-    return {"status": "scaffold", "key": namespaced_key, "data": None}
+_tool_runtime_context: ContextVar[_ToolRuntimeContext | None] = ContextVar(
+    "adk_tool_runtime_context",
+    default=None,
+)
+
+
+def bind_tool_runtime_context(
+    tenant_id: str,
+    user_id: str,
+    session_id: str,
+    plan_id: str,
+    memory_repo: MemoryRepository | None,
+    embedding_service: EmbeddingService | None,
+) -> Token[_ToolRuntimeContext | None]:
+    return _tool_runtime_context.set(
+        _ToolRuntimeContext(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            session_id=session_id,
+            plan_id=plan_id,
+            memory_repo=memory_repo,
+            embedding_service=embedding_service,
+        )
+    )
+
+
+def reset_tool_runtime_context(token: Token[_ToolRuntimeContext | None]) -> None:
+    _tool_runtime_context.reset(token)
+
+
+async def write_memory(key: str, data: dict[str, Any], return_spec: dict[str, Any]) -> dict[str, Any]:
+    context = _tool_runtime_context.get()
+    if context is None or context.memory_repo is None:
+        return {
+            "status": "not_configured",
+            "reason": "memory_repository_not_configured",
+            "key": key,
+        }
+
+    namespaced_key = await context.memory_repo.write(
+        tenant_id=context.tenant_id,
+        session_id=context.session_id,
+        task_id=_new_task_id(context.plan_id),
+        key=key,
+        value=data,
+        return_spec_shape=return_spec,
+        scope="session",
+    )
+    return {
+        "status": "ok",
+        "namespaced_key": namespaced_key,
+        "scope": "session",
+        "data": data,
+    }
+
+
+async def read_memory(namespaced_key: str) -> dict[str, Any]:
+    context = _tool_runtime_context.get()
+    if context is None or context.memory_repo is None:
+        return {
+            "status": "not_configured",
+            "reason": "memory_repository_not_configured",
+            "key": namespaced_key,
+        }
+
+    value = await context.memory_repo.read(namespaced_key=namespaced_key)
+    return {
+        "status": "ok" if value is not None else "not_found",
+        "key": namespaced_key,
+        "data": value,
+    }
+
+
+async def save_user_memory(
+    key: str,
+    memory_json: str,
+    return_spec_json: str | None = None,
+) -> dict[str, Any]:
+    context = _tool_runtime_context.get()
+    if context is None or context.memory_repo is None:
+        return {
+            "status": "not_configured",
+            "reason": "memory_repository_not_configured",
+            "key": key,
+        }
+
+    parsed_memory = _parse_json_object(memory_json)
+    if parsed_memory is None:
+        return {
+            "status": "failed",
+            "reason": "invalid_memory_json",
+            "key": key,
+        }
+
+    parsed_spec = _parse_json_object(return_spec_json) if return_spec_json else None
+    effective_spec = parsed_spec or _derive_return_spec(parsed_memory)
+    namespaced_key = await context.memory_repo.write(
+        tenant_id=context.tenant_id,
+        session_id=context.session_id,
+        task_id=_new_task_id(context.plan_id),
+        key=key,
+        value=parsed_memory,
+        return_spec_shape=effective_spec,
+        scope="user",
+    )
+    return {
+        "status": "ok",
+        "memory_type": "user_memory",
+        "scope": "user",
+        "namespaced_key": namespaced_key,
+    }
+
+
+async def save_action_memory(
+    key: str,
+    memory_json: str,
+    return_spec_json: str | None = None,
+) -> dict[str, Any]:
+    context = _tool_runtime_context.get()
+    if context is None or context.memory_repo is None:
+        return {
+            "status": "not_configured",
+            "reason": "memory_repository_not_configured",
+            "key": key,
+        }
+
+    parsed_memory = _parse_json_object(memory_json)
+    if parsed_memory is None:
+        return {
+            "status": "failed",
+            "reason": "invalid_memory_json",
+            "key": key,
+        }
+
+    parsed_spec = _parse_json_object(return_spec_json) if return_spec_json else None
+    effective_spec = parsed_spec or _derive_return_spec(parsed_memory)
+    namespaced_key = await context.memory_repo.write(
+        tenant_id=context.tenant_id,
+        session_id=context.session_id,
+        task_id=_new_task_id(context.plan_id),
+        key=key,
+        value=parsed_memory,
+        return_spec_shape=effective_spec,
+        scope="session",
+    )
+    return {
+        "status": "ok",
+        "memory_type": "action_memory",
+        "scope": "session",
+        "namespaced_key": namespaced_key,
+    }
+
+
+async def search_relevant_memory(
+    query: str,
+    scope: str = "user",
+    top_k: int = 5,
+) -> dict[str, Any]:
+    context = _tool_runtime_context.get()
+    if context is None or context.memory_repo is None:
+        return {
+            "status": "not_configured",
+            "reason": "memory_repository_not_configured",
+            "query": query,
+            "results": [],
+        }
+
+    results = await context.memory_repo.search(
+        tenant_id=context.tenant_id,
+        user_id=context.user_id,
+        session_id=context.session_id,
+        query_text=query,
+        scope=scope,
+        top_k=top_k,
+    )
+    return {
+        "status": "ok",
+        "query": query,
+        "scope": scope,
+        "results": results,
+        "count": len(results),
+    }
 
 
 def write_temp(data: str) -> dict[str, str]:
@@ -207,6 +400,38 @@ def _default_extraction_script(required_fields: list[str]) -> str:
         "payload = read_json_file(file_id)\n"
         f"result = {{{projected_fields}}}"
     )
+
+
+def _new_task_id(plan_id: str) -> str:
+    return f"{plan_id}:{uuid4().hex[:8]}"
+
+
+def _derive_return_spec(data: dict[str, Any]) -> dict[str, Any]:
+    return {field: _infer_type(value) for field, value in data.items()}
+
+
+def _infer_type(value: Any) -> str:
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, dict):
+        return "object"
+    return "string"
+
+
+def _parse_json_object(raw: str | None) -> dict[str, Any] | None:
+    if raw is None:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def _project_direct_response(response: str, required_fields: list[str]) -> dict[str, Any]:

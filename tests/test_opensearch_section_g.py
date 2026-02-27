@@ -26,6 +26,7 @@ class _FakeIndicesClient:
     def __init__(self) -> None:
         self.created: dict[str, dict] = {}
         self.create_conflicts: set[str] = set()
+        self.updated_mappings: dict[str, dict] = {}
 
     def exists(self, index: str) -> bool:
         return index in self.created
@@ -41,6 +42,9 @@ class _FakeIndicesClient:
                 },
             )
         self.created[index] = body
+
+    def put_mapping(self, index: str, body: dict) -> None:
+        self.updated_mappings[index] = body
 
 
 class _FakeIlmClient:
@@ -218,6 +222,47 @@ async def test_section_g_event_repository_validates_and_persists_event_documents
 
     assert len(events) == 1
     assert events[0].event_type == "plan.persisted"
+
+
+@pytest.mark.asyncio
+async def test_section_g_event_repository_normalizes_volatile_nested_payload_fields() -> None:
+    client = _FakeOpenSearchClient()
+    index_name = "agent_events"
+    client.indices.create(index=index_name, body=build_index_definition(index_name))
+    repo = OpenSearchEventRepository(client=client)
+
+    event = EventRecord(
+        event_type="adk.llm_response",
+        tenant_id="tenant-1",
+        session_id="session-1",
+        plan_id="plan-1",
+        task_id="task-1",
+        payload={
+            "agent": "planner_subagent_a",
+            "tool_args": {"group_by": "daily"},
+            "function_calls": [
+                {"name": "find_relevant_skill", "args": {"query": "aws cost"}},
+            ],
+            "function_responses": [
+                {"name": "load_instruction", "response": {"status": "ok"}},
+            ],
+        },
+        ts=datetime.now(UTC),
+    )
+
+    await repo.append(event)
+
+    persisted = next(iter(client.docs[index_name].values()))
+    payload = persisted["payload"]
+
+    assert "tool_args" not in payload
+    assert payload["tool_args_json"] == '{"group_by": "daily"}'
+    assert payload["function_calls"][0]["name"] == "find_relevant_skill"
+    assert "args" not in payload["function_calls"][0]
+    assert payload["function_calls"][0]["args_json"] == '{"query": "aws cost"}'
+    assert payload["function_responses"][0]["name"] == "load_instruction"
+    assert "response" not in payload["function_responses"][0]
+    assert payload["function_responses"][0]["response_json"] == '{"status": "ok"}'
 
 
 @pytest.mark.asyncio

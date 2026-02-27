@@ -14,15 +14,22 @@ Core service to handle agentic orchestration.
 - [Architecture source](./agent_architecture_v3.docx.md)
 - [Docs index](./docs/README.md)
 - [Implementation checklist](./docs/06-implementation-checklist.md)
+- [ADK-only migration checklist](./docs/11-adk-only-migration-checklist.md)
 - [Coding standards](./docs/07-coding-standards.md)
 
 # Scaffold structure
 
 - `src/agent_core/domain`: core models and typed exceptions
-- `src/agent_core/application`: ports and orchestrator use-case
-- `src/agent_core/infra`: adapters, mock subagents, config, logging
+- `src/agent_core/application`: repository/adapter ports
+- `src/agent_core/infra`: ADK runtime, adapters, config, logging
 - `src/agent_core/api`: FastAPI endpoints and request schemas
 - `src/agent_core/prompts`: centralized agent prompt templates/constants
+
+# Latest update
+
+- Runtime execution is ADK-only for `POST /agent/run`.
+- Legacy custom orchestrator and mock planner/executor flow were removed.
+- Planner and executor are both ADK sub-agents under the ADK coordinator graph.
 
 # Quick start (uv + venv)
 

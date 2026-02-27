@@ -12,14 +12,17 @@ from google.adk.sessions import BaseSessionService
 from google.adk.tools.mcp_tool import McpToolset
 from google.genai import types
 
-from agent_core.application.ports import EventRepository
+from agent_core.application.ports import EventRepository, MemoryRepository
 from agent_core.domain.models import AgentRunRequest, AgentRunResponse, EventRecord
 from agent_core.infra.adk.agents import (
     build_coordinator_agent,
     build_executor_agent,
+    build_memory_agent,
     build_planner_agent,
 )
 from agent_core.infra.adk.callbacks import bind_trace_context, reset_trace_context
+from agent_core.infra.adk.tools import bind_tool_runtime_context, reset_tool_runtime_context
+from agent_core.infra.adapters.embedding import EmbeddingService
 from agent_core.infra.adk.mcp import (
     ResolvedMcpEndpoint,
     build_executor_mcp_toolsets,
@@ -42,6 +45,8 @@ class AdkRuntimeScaffold:
         skill_service_url: str | None = None,
         skill_service_key: str | None = None,
         event_repo: EventRepository | None = None,
+        memory_repo: MemoryRepository | None = None,
+        embedding_service: EmbeddingService | None = None,
         mcp_session_timeout: float = 60.0,
     ) -> None:
         self.app_name = app_name
@@ -51,6 +56,8 @@ class AdkRuntimeScaffold:
         self.skill_service_url = skill_service_url
         self.skill_service_key = skill_service_key
         self.event_repo = event_repo
+        self.memory_repo = memory_repo
+        self.embedding_service = embedding_service
         self.mcp_session_timeout = mcp_session_timeout
         self.executor_allowed_skills: list[str] = []
         self.planner_mcp_toolset: McpToolset | None = None
@@ -105,6 +112,7 @@ class AdkRuntimeScaffold:
             },
         )
 
+        self.memory_agent = build_memory_agent(model_name=self.model_name)
         self.planner_agent = build_planner_agent(
             mcp_toolset=self.planner_mcp_toolset,
             model_name=self.model_name,
@@ -114,6 +122,7 @@ class AdkRuntimeScaffold:
             model_name=self.model_name,
         )
         self.coordinator_agent = build_coordinator_agent(
+            memory=self.memory_agent,
             planner=self.planner_agent,
             executor=self.executor_agent,
             model_name=self.model_name,
@@ -134,15 +143,29 @@ class AdkRuntimeScaffold:
         self.memory_service: BaseMemoryService | None = self.runner.memory_service
 
     async def run(self, request: AgentRunRequest) -> AgentRunResponse:
-        await self._ensure_session(request)
+        is_first_turn = await self._ensure_session(request)
         plan_id = f"plan_adk_{uuid4().hex[:12]}"
         trace_token = None
+        tool_context_token = bind_tool_runtime_context(
+            tenant_id=request.tenant_id,
+            user_id=request.user_id,
+            session_id=request.session_id,
+            plan_id=plan_id,
+            memory_repo=self.memory_repo,
+            embedding_service=self.embedding_service,
+        )
         if self.event_repo is not None:
             trace_token = bind_trace_context(
                 event_repo=self.event_repo,
                 tenant_id=request.tenant_id,
                 session_id=request.session_id,
                 plan_id=plan_id,
+                require_planner_first_transfer=is_first_turn,
+                planner_expected_tools=(
+                    list(self._resolved_planner_endpoint.planner_tools)
+                    if self._resolved_planner_endpoint is not None
+                    else []
+                ),
             )
         events = self.runner.run_async(
             user_id=request.user_id,
@@ -185,6 +208,7 @@ class AdkRuntimeScaffold:
             )
             raise
         finally:
+            reset_tool_runtime_context(tool_context_token)
             if trace_token is not None:
                 reset_trace_context(trace_token)
 
@@ -197,20 +221,21 @@ class AdkRuntimeScaffold:
             query=query,
         )
 
-    async def _ensure_session(self, request: AgentRunRequest) -> None:
+    async def _ensure_session(self, request: AgentRunRequest) -> bool:
         session = await self.session_service.get_session(
             app_name=self.app_name,
             user_id=request.user_id,
             session_id=request.session_id,
         )
         if session is not None:
-            return
+            return False
         await self.session_service.create_session(
             app_name=self.app_name,
             user_id=request.user_id,
             session_id=request.session_id,
             state=_build_initial_session_state(request),
         )
+        return True
 
     async def _index_session_in_memory(self, request: AgentRunRequest) -> None:
         if self.memory_service is None:

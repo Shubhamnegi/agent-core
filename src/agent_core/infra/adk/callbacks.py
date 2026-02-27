@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
@@ -25,6 +26,13 @@ class _TraceContext:
     tenant_id: str
     session_id: str
     plan_id: str
+    require_planner_first_transfer: bool
+    planner_transfer_seen: bool = False
+    planner_find_skill_called: bool = False
+    planner_load_skill_called: bool = False
+    planner_no_skill_found: bool = False
+    planner_expected_tools: list[str] | None = None
+    planner_available_tools: list[str] | None = None
 
 
 _trace_context: ContextVar[_TraceContext | None] = ContextVar(
@@ -38,6 +46,8 @@ def bind_trace_context(
     tenant_id: str,
     session_id: str,
     plan_id: str,
+    require_planner_first_transfer: bool = False,
+    planner_expected_tools: list[str] | None = None,
 ) -> Token[_TraceContext | None]:
     return _trace_context.set(
         _TraceContext(
@@ -45,6 +55,8 @@ def bind_trace_context(
             tenant_id=tenant_id,
             session_id=session_id,
             plan_id=plan_id,
+            require_planner_first_transfer=require_planner_first_transfer,
+            planner_expected_tools=planner_expected_tools,
         )
     )
 
@@ -137,6 +149,47 @@ async def before_model_callback(
             if si_texts:
                 system_instruction = si_texts[0][:_PROMPT_TEXT_LIMIT]
     tool_names = sorted(llm_request.tools_dict.keys()) if llm_request.tools_dict else []
+
+    trace_context = _trace_context.get()
+    if agent_name == "planner_subagent_a" and trace_context is not None:
+        trace_context.planner_available_tools = tool_names
+        has_find = "find_relevant_skill" in tool_names
+        has_load = ("load_instruction" in tool_names) or ("load_instructions" in tool_names)
+        expected = trace_context.planner_expected_tools or []
+        expected_find = "find_relevant_skill" in expected
+        expected_load = ("load_instruction" in expected) or ("load_instructions" in expected)
+
+        logger.info(
+            "planner_tool_availability",
+            extra={
+                "agent": agent_name,
+                "planner_expected_tools": expected,
+                "planner_available_tools": tool_names,
+                "has_find_relevant_skill": has_find,
+                "has_load_instruction": has_load,
+            },
+        )
+
+        if expected_load and not has_load:
+            logger.warning(
+                "planner_load_tool_missing",
+                extra={
+                    "agent": agent_name,
+                    "planner_expected_tools": expected,
+                    "planner_available_tools": tool_names,
+                    "reason": "planner_tool_filter_mismatch_or_server_tool_absent",
+                },
+            )
+
+        if expected_find and not has_find:
+            logger.warning(
+                "planner_find_tool_missing",
+                extra={
+                    "agent": agent_name,
+                    "planner_expected_tools": expected,
+                    "planner_available_tools": tool_names,
+                },
+            )
     logger.info(
         "llm_prompt",
         extra={
@@ -221,15 +274,87 @@ async def before_tool_callback(
     args: dict[str, Any],
     tool_context: Any,
 ) -> dict[str, Any] | None:
+    agent_name = getattr(tool_context, "agent_name", "unknown")
     logger.info(
         "tool_call_start",
         extra={
             "tool_name": tool.name,
+            "agent": agent_name,
             "tool_args": args,
         },
     )
     if tool.name == "write_memory" and "return_spec" not in args:
         return {"status": "contract_violation", "reason": "missing return_spec"}
+
+    if tool.name == "transfer_to_agent":
+        destination = args.get("agent_name") if isinstance(args, dict) else None
+        trace_context = _trace_context.get()
+        if trace_context is not None and isinstance(destination, str):
+            if destination == "planner_subagent_a":
+                trace_context.planner_transfer_seen = True
+                trace_context.planner_find_skill_called = False
+                trace_context.planner_load_skill_called = False
+                trace_context.planner_no_skill_found = False
+
+            if (
+                destination == "executor_subagent_b"
+                and trace_context.require_planner_first_transfer
+                and not trace_context.planner_transfer_seen
+            ):
+                logger.warning(
+                    "transfer_blocked_planner_required",
+                    extra={
+                        "tool_name": tool.name,
+                        "tool_args": args,
+                        "reason": "planner_required_before_executor_first_turn",
+                    },
+                )
+                return {
+                    "status": "blocked",
+                    "reason": "planner_required_before_executor_first_turn",
+                    "required_agent": "planner_subagent_a",
+                }
+
+            if destination == "executor_subagent_b" and trace_context.planner_transfer_seen:
+                if not trace_context.planner_find_skill_called:
+                    logger.warning(
+                        "transfer_blocked_planner_find_missing",
+                        extra={
+                            "planner_expected_tools": trace_context.planner_expected_tools,
+                            "planner_available_tools": trace_context.planner_available_tools,
+                            "planner_find_skill_called": trace_context.planner_find_skill_called,
+                        },
+                    )
+                    return {
+                        "status": "blocked",
+                        "reason": "planner_must_discover_skills_before_executor",
+                        "required_tool": "find_relevant_skill",
+                    }
+                if (
+                    not trace_context.planner_load_skill_called
+                    and not trace_context.planner_no_skill_found
+                ):
+                    logger.warning(
+                        "transfer_blocked_planner_load_missing",
+                        extra={
+                            "planner_expected_tools": trace_context.planner_expected_tools,
+                            "planner_available_tools": trace_context.planner_available_tools,
+                            "planner_load_skill_called": trace_context.planner_load_skill_called,
+                            "planner_no_skill_found": trace_context.planner_no_skill_found,
+                        },
+                    )
+                    return {
+                        "status": "blocked",
+                        "reason": "planner_must_load_skills_before_executor",
+                        "required_tool": "load_instruction_or_load_instructions",
+                    }
+
+    trace_context = _trace_context.get()
+    if trace_context is not None and agent_name == "planner_subagent_a":
+        if tool.name == "find_relevant_skill":
+            trace_context.planner_find_skill_called = True
+        if tool.name in {"load_instruction", "load_instructions"}:
+            trace_context.planner_load_skill_called = True
     return None
 
 
@@ -241,15 +366,26 @@ async def after_tool_callback(
     tool_response: Any = None,
     **_: Any,
 ) -> dict[str, Any] | None:
+    agent_name = getattr(tool_context, "agent_name", "unknown")
     effective_result = tool_response if tool_response is not None else result
     result_preview = str(effective_result)[:1000] if effective_result else ""
     logger.info(
         "tool_call_end",
         extra={
             "tool_name": tool.name,
+            "agent": agent_name,
             "result_preview": result_preview,
         },
     )
+
+    trace_context = _trace_context.get()
+    if (
+        trace_context is not None
+        and agent_name == "planner_subagent_a"
+        and tool.name == "find_relevant_skill"
+    ):
+        trace_context.planner_no_skill_found = _result_indicates_no_skills(effective_result)
+
     if isinstance(effective_result, dict):
         enriched = dict(effective_result)
         enriched["tool_name"] = tool.name
@@ -257,22 +393,44 @@ async def after_tool_callback(
     return None
 
 
+def _result_indicates_no_skills(result: Any) -> bool:
+    if result is None:
+        return False
+    try:
+        serialized = json.dumps(result, default=str).lower()
+    except Exception:
+        serialized = str(result).lower()
+
+    empty_markers = (
+        '"skills": []',
+        '"skill_ids": []',
+        '"matched_skills": []',
+        '"results": []',
+        "no relevant skill",
+        "no skills found",
+    )
+    return any(marker in serialized for marker in empty_markers)
+
+
 async def on_tool_error_callback(
     tool: Any,
     args: dict[str, Any],
     tool_context: Any,
-    exc: Exception,
+    error: Exception | None = None,
+    exc: Exception | None = None,
+    **_: Any,
 ) -> dict[str, Any]:
+    effective_error = error or exc or RuntimeError("unknown_tool_error")
     logger.error(
         "tool_call_error",
         extra={
             "tool_name": tool.name,
-            "error_type": type(exc).__name__,
-            "error": str(exc),
+            "error_type": type(effective_error).__name__,
+            "error": str(effective_error),
         },
     )
     return {
         "status": "failed",
         "tool_name": tool.name,
-        "reason": str(exc),
+        "reason": str(effective_error),
     }

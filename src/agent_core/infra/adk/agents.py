@@ -18,6 +18,9 @@ from agent_core.infra.adk.tools import (
     exec_python,
     read_lines,
     read_memory,
+    save_action_memory,
+    save_user_memory,
+    search_relevant_memory,
     write_memory,
     write_temp,
 )
@@ -25,6 +28,7 @@ from agent_core.prompts import (
     COORDINATOR_INSTRUCTION,
     EXECUTOR_INSTRUCTION,
     EXECUTOR_SCAFFOLD_PREFIX,
+    MEMORY_INSTRUCTION,
     PLANNER_INSTRUCTION,
     PLANNER_SCAFFOLD_PREFIX,
 )
@@ -55,6 +59,7 @@ class ExecutorAgent(BaseAgent):
 
 
 def build_coordinator_agent(
+    memory: BaseAgent,
     planner: BaseAgent,
     executor: BaseAgent,
     model_name: str = "models/gemini-flash-lite-latest",
@@ -64,7 +69,24 @@ def build_coordinator_agent(
         description="Manager role scaffold",
         model=model_name,
         instruction=COORDINATOR_INSTRUCTION,
-        sub_agents=[planner, executor],
+        sub_agents=[memory, planner, executor],
+        before_model_callback=before_model_callback,
+        after_model_callback=after_model_callback,
+        before_tool_callback=before_tool_callback,
+        after_tool_callback=after_tool_callback,
+        on_tool_error_callback=on_tool_error_callback,
+    )
+
+
+def build_memory_agent(
+    model_name: str = "models/gemini-flash-lite-latest",
+) -> LlmAgent:
+    return LlmAgent(
+        name="memory_subagent_c",
+        description="Memory intelligence scaffold",
+        model=model_name,
+        instruction=MEMORY_INSTRUCTION,
+        tools=[search_relevant_memory, save_user_memory, save_action_memory, read_memory],
         before_model_callback=before_model_callback,
         after_model_callback=after_model_callback,
         before_tool_callback=before_tool_callback,
@@ -126,4 +148,13 @@ def _extract_user_text(ctx: Any) -> str:
 
 
 def _infra_tools() -> list[Any]:
-    return [write_memory, read_memory, write_temp, read_lines, exec_python]
+    return [
+        write_memory,
+        read_memory,
+        save_user_memory,
+        save_action_memory,
+        search_relevant_memory,
+        write_temp,
+        read_lines,
+        exec_python,
+    ]

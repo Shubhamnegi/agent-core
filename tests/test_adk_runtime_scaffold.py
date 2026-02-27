@@ -15,9 +15,11 @@ from agent_core.infra.adk.callbacks import (
     before_model_callback,
     before_tool_callback,
     bind_trace_context,
+    on_tool_error_callback,
     reset_trace_context,
 )
 from agent_core.infra.adk.runtime import AdkRuntimeScaffold
+from agent_core.prompts import COORDINATOR_INSTRUCTION, MEMORY_INSTRUCTION, PLANNER_INSTRUCTION
 
 
 def test_adk_runtime_uses_llm_coordinator_with_planner_executor_subagents() -> None:
@@ -36,7 +38,15 @@ def test_adk_runtime_uses_llm_coordinator_with_planner_executor_subagents() -> N
     assert isinstance(coordinator, LlmAgent)
 
     subagent_names = [agent.name for agent in coordinator.sub_agents]
-    assert subagent_names == ["planner_subagent_a", "executor_subagent_b"]
+    assert subagent_names == ["memory_subagent_c", "planner_subagent_a", "executor_subagent_b"]
+
+
+def test_prompt_contract_routes_memory_via_coordinator_and_planner() -> None:
+    assert "memory_subagent_c" in COORDINATOR_INSTRUCTION
+    assert "persist durable memory" in COORDINATOR_INSTRUCTION
+    assert "search_relevant_memory" in PLANNER_INSTRUCTION
+    assert "save_user_memory" in MEMORY_INSTRUCTION
+    assert "save_action_memory" in MEMORY_INSTRUCTION
 
 
 def _write_mcp_config(path: Path) -> None:
@@ -104,7 +114,16 @@ def test_adk_subagents_always_include_infra_tool_suite() -> None:
 
     planner_tools = {getattr(tool, "__name__", "") for tool in planner.tools}
     executor_tools = {getattr(tool, "__name__", "") for tool in executor.tools}
-    expected = {"write_memory", "read_memory", "write_temp", "read_lines", "exec_python"}
+    expected = {
+        "write_memory",
+        "read_memory",
+        "save_user_memory",
+        "save_action_memory",
+        "search_relevant_memory",
+        "write_temp",
+        "read_lines",
+        "exec_python",
+    }
 
     assert expected.issubset(planner_tools)
     assert expected.issubset(executor_tools)
@@ -217,10 +236,14 @@ async def test_adk_runtime_ensures_session_via_session_service() -> None:
         message="hello",
     )
 
-    await runtime._ensure_session(request)
+    is_first_turn = await runtime._ensure_session(request)
 
+    assert is_first_turn is True
     assert fake_service.get_calls == 1
     assert fake_service.create_calls == 1
+
+    is_first_turn_again = await runtime._ensure_session(request)
+    assert is_first_turn_again is False
 
 
 @pytest.mark.asyncio
@@ -335,6 +358,7 @@ async def test_model_callbacks_persist_prompt_and_response_events_with_trace_con
         tenant_id="tenant_1",
         session_id="session_1",
         plan_id="plan_adk_trace_1",
+        require_planner_first_transfer=False,
     )
     try:
         callback_context = SimpleNamespace(agent_name="planner_subagent_a", invocation_id="task_1")
@@ -364,3 +388,195 @@ async def test_model_callbacks_persist_prompt_and_response_events_with_trace_con
     for event in fake_event_repo.events:
         assert event["plan_id"] == "plan_adk_trace_1"
         assert event["session_id"] == "session_1"
+
+
+@pytest.mark.asyncio
+async def test_before_tool_callback_blocks_executor_transfer_on_first_turn() -> None:
+    token = bind_trace_context(
+        event_repo=_FakeEventRepository(),  # type: ignore[arg-type]
+        tenant_id="tenant_1",
+        session_id="session_1",
+        plan_id="plan_adk_trace_2",
+        require_planner_first_transfer=True,
+    )
+    try:
+        blocked = await before_tool_callback(
+            tool=SimpleNamespace(name="transfer_to_agent"),
+            args={"agent_name": "executor_subagent_b"},
+            tool_context=SimpleNamespace(agent_name="orchestrator_manager"),
+        )
+    finally:
+        reset_trace_context(token)
+
+    assert blocked is not None
+    assert blocked["status"] == "blocked"
+    assert blocked["reason"] == "planner_required_before_executor_first_turn"
+
+
+@pytest.mark.asyncio
+async def test_before_tool_callback_allows_executor_after_planner_transfer() -> None:
+    token = bind_trace_context(
+        event_repo=_FakeEventRepository(),  # type: ignore[arg-type]
+        tenant_id="tenant_1",
+        session_id="session_1",
+        plan_id="plan_adk_trace_3",
+        require_planner_first_transfer=True,
+    )
+    try:
+        planner_result = await before_tool_callback(
+            tool=SimpleNamespace(name="transfer_to_agent"),
+            args={"agent_name": "planner_subagent_a"},
+            tool_context=SimpleNamespace(agent_name="orchestrator_manager"),
+        )
+
+        planner_find_result = await before_tool_callback(
+            tool=SimpleNamespace(name="find_relevant_skill"),
+            args={"query": "aws cost compare"},
+            tool_context=SimpleNamespace(agent_name="planner_subagent_a"),
+        )
+        await after_tool_callback(
+            tool=SimpleNamespace(name="find_relevant_skill"),
+            args={"query": "aws cost compare"},
+            tool_context=SimpleNamespace(agent_name="planner_subagent_a"),
+            tool_response={"results": [{"skill_id": "skill_aws_cost"}]},
+        )
+
+        planner_load_result = await before_tool_callback(
+            tool=SimpleNamespace(name="load_instruction"),
+            args={"skill_id": "skill_aws_cost"},
+            tool_context=SimpleNamespace(agent_name="planner_subagent_a"),
+        )
+
+        executor_result = await before_tool_callback(
+            tool=SimpleNamespace(name="transfer_to_agent"),
+            args={"agent_name": "executor_subagent_b"},
+            tool_context=SimpleNamespace(agent_name="orchestrator_manager"),
+        )
+    finally:
+        reset_trace_context(token)
+
+    assert planner_result is None
+    assert planner_find_result is None
+    assert planner_load_result is None
+    assert executor_result is None
+
+
+@pytest.mark.asyncio
+async def test_before_tool_callback_blocks_executor_when_planner_skips_find_skill() -> None:
+    token = bind_trace_context(
+        event_repo=_FakeEventRepository(),  # type: ignore[arg-type]
+        tenant_id="tenant_1",
+        session_id="session_1",
+        plan_id="plan_adk_trace_4",
+        require_planner_first_transfer=True,
+    )
+    try:
+        await before_tool_callback(
+            tool=SimpleNamespace(name="transfer_to_agent"),
+            args={"agent_name": "planner_subagent_a"},
+            tool_context=SimpleNamespace(agent_name="orchestrator_manager"),
+        )
+
+        blocked = await before_tool_callback(
+            tool=SimpleNamespace(name="transfer_to_agent"),
+            args={"agent_name": "executor_subagent_b"},
+            tool_context=SimpleNamespace(agent_name="orchestrator_manager"),
+        )
+    finally:
+        reset_trace_context(token)
+
+    assert blocked is not None
+    assert blocked["status"] == "blocked"
+    assert blocked["reason"] == "planner_must_discover_skills_before_executor"
+
+
+@pytest.mark.asyncio
+async def test_before_tool_callback_blocks_executor_when_planner_skips_load_skill() -> None:
+    token = bind_trace_context(
+        event_repo=_FakeEventRepository(),  # type: ignore[arg-type]
+        tenant_id="tenant_1",
+        session_id="session_1",
+        plan_id="plan_adk_trace_5",
+        require_planner_first_transfer=True,
+    )
+    try:
+        await before_tool_callback(
+            tool=SimpleNamespace(name="transfer_to_agent"),
+            args={"agent_name": "planner_subagent_a"},
+            tool_context=SimpleNamespace(agent_name="orchestrator_manager"),
+        )
+        await before_tool_callback(
+            tool=SimpleNamespace(name="find_relevant_skill"),
+            args={"query": "cost"},
+            tool_context=SimpleNamespace(agent_name="planner_subagent_a"),
+        )
+        await after_tool_callback(
+            tool=SimpleNamespace(name="find_relevant_skill"),
+            args={"query": "cost"},
+            tool_context=SimpleNamespace(agent_name="planner_subagent_a"),
+            tool_response={"results": [{"skill_id": "skill_a"}]},
+        )
+
+        blocked = await before_tool_callback(
+            tool=SimpleNamespace(name="transfer_to_agent"),
+            args={"agent_name": "executor_subagent_b"},
+            tool_context=SimpleNamespace(agent_name="orchestrator_manager"),
+        )
+    finally:
+        reset_trace_context(token)
+
+    assert blocked is not None
+    assert blocked["status"] == "blocked"
+    assert blocked["reason"] == "planner_must_load_skills_before_executor"
+
+
+@pytest.mark.asyncio
+async def test_before_tool_callback_allows_executor_when_no_skills_found() -> None:
+    token = bind_trace_context(
+        event_repo=_FakeEventRepository(),  # type: ignore[arg-type]
+        tenant_id="tenant_1",
+        session_id="session_1",
+        plan_id="plan_adk_trace_6",
+        require_planner_first_transfer=True,
+    )
+    try:
+        await before_tool_callback(
+            tool=SimpleNamespace(name="transfer_to_agent"),
+            args={"agent_name": "planner_subagent_a"},
+            tool_context=SimpleNamespace(agent_name="orchestrator_manager"),
+        )
+        await before_tool_callback(
+            tool=SimpleNamespace(name="find_relevant_skill"),
+            args={"query": "cost"},
+            tool_context=SimpleNamespace(agent_name="planner_subagent_a"),
+        )
+        await after_tool_callback(
+            tool=SimpleNamespace(name="find_relevant_skill"),
+            args={"query": "cost"},
+            tool_context=SimpleNamespace(agent_name="planner_subagent_a"),
+            tool_response={"results": []},
+        )
+
+        allowed = await before_tool_callback(
+            tool=SimpleNamespace(name="transfer_to_agent"),
+            args={"agent_name": "executor_subagent_b"},
+            tool_context=SimpleNamespace(agent_name="orchestrator_manager"),
+        )
+    finally:
+        reset_trace_context(token)
+
+    assert allowed is None
+
+
+@pytest.mark.asyncio
+async def test_on_tool_error_callback_accepts_error_keyword() -> None:
+    result = await on_tool_error_callback(
+        tool=SimpleNamespace(name="save_user_memory"),
+        args={"key": "pref"},
+        tool_context=SimpleNamespace(agent_name="memory_subagent_c"),
+        error=RuntimeError("embedding_failed"),
+    )
+
+    assert result["status"] == "failed"
+    assert result["tool_name"] == "save_user_memory"
+    assert "embedding_failed" in result["reason"]

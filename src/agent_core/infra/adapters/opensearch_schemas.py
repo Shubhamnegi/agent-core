@@ -50,8 +50,16 @@ def build_index_definition(
                     "task_id": {"type": "keyword"},
                     "scope": {"type": "keyword"},
                     "key": {"type": "keyword"},
-                    "value": {"type": "object", "enabled": True},
-                    "return_spec_shape": {"type": "object", "enabled": True},
+                    "value": {
+                        "type": "object",
+                        "enabled": True,
+                        "dynamic": True,
+                    },
+                    "return_spec_shape": {
+                        "type": "object",
+                        "enabled": True,
+                        "dynamic": True,
+                    },
                     "created_at": {"type": "date"},
                     "updated_at": {"type": "date"},
                     "embedding": {"type": "knn_vector", "dimension": embedding_dims},

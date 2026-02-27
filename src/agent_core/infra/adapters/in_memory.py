@@ -8,7 +8,6 @@ from typing import Any
 from agent_core.application.ports import (
     EventRepository,
     MemoryRepository,
-    MessageBusPublisher,
     PlanRepository,
     SoulRepository,
 )
@@ -52,6 +51,7 @@ class InMemoryMemoryRepository(MemoryRepository):
         key: str,
         value: dict,
         return_spec_shape: dict,
+        scope: str = "session",
     ) -> str:
         self._validate_user_key_label(key)
         if not _matches_return_spec_contract(value, return_spec_shape):
@@ -60,16 +60,68 @@ class InMemoryMemoryRepository(MemoryRepository):
 
         namespaced = _build_namespaced_key(tenant_id, session_id, task_id, key)
         await self._acquire_write_lock(namespaced_key=namespaced, owner_task_id=task_id)
-        self._data[namespaced] = value
+        self._data[namespaced] = {
+            "tenant_id": tenant_id,
+            "session_id": session_id,
+            "task_id": task_id,
+            "scope": scope,
+            "key": key,
+            "value": value,
+            "return_spec_shape": return_spec_shape,
+        }
         return namespaced
 
     async def read(self, namespaced_key: str, release_lock: bool = False) -> dict | None:
-        value = self._data.get(namespaced_key)
+        record = self._data.get(namespaced_key)
         if release_lock:
             # Why release on orchestrator read: it acts as explicit confirmation that
             # step output was consumed, matching the intended lock lifecycle contract.
             self._locks.pop(namespaced_key, None)
-        return value
+        if not isinstance(record, dict):
+            return None
+        value = record.get("value")
+        return value if isinstance(value, dict) else None
+
+    async def search(
+        self,
+        tenant_id: str,
+        user_id: str,
+        session_id: str,
+        query_text: str,
+        scope: str,
+        top_k: int,
+    ) -> list[dict]:
+        _ = user_id
+        lowered_query = query_text.lower().strip()
+        results: list[dict[str, Any]] = []
+        for namespaced_key, record in self._data.items():
+            if not isinstance(record, dict):
+                continue
+            if record.get("tenant_id") != tenant_id:
+                continue
+            if record.get("scope") != scope:
+                continue
+            if scope == "session" and record.get("session_id") != session_id:
+                continue
+
+            key = str(record.get("key", ""))
+            value = record.get("value")
+            haystack = f"{key} {value}".lower()
+            if lowered_query and lowered_query not in haystack:
+                continue
+
+            results.append(
+                {
+                    "namespaced_key": namespaced_key,
+                    "tenant_id": tenant_id,
+                    "session_id": record.get("session_id"),
+                    "scope": scope,
+                    "key": key,
+                    "value": value,
+                }
+            )
+
+        return results[: max(top_k, 0)]
 
     async def _acquire_write_lock(self, namespaced_key: str, owner_task_id: str) -> None:
         deadline = monotonic() + self._lock_wait_timeout_seconds
@@ -118,14 +170,6 @@ class InMemorySoulRepository(SoulRepository):
     async def upsert(self, tenant_id: str, user_id: str | None, payload: dict) -> None:
         key = f"{tenant_id}:{user_id or '*'}"
         self._souls[key] = payload
-
-
-class InMemoryMessageBusPublisher(MessageBusPublisher):
-    def __init__(self) -> None:
-        self._messages: list[dict[str, Any]] = []
-
-    async def publish(self, topic: str, payload: dict[str, Any]) -> None:
-        self._messages.append({"topic": topic, "payload": payload})
 
 
 class _HeldLock:

@@ -78,6 +78,8 @@ class OpenSearchIndexManager:
         for base_index in ALL_INDEXES:
             resolved = resolve_index_name(base_index, self.index_prefix)
             if self.client.indices.exists(index=resolved):
+                if base_index == INDEX_AGENT_MEMORY:
+                    self._upgrade_memory_index_mapping_if_needed(resolved)
                 continue
 
             definition = build_index_definition(
@@ -86,9 +88,28 @@ class OpenSearchIndexManager:
             )
             try:
                 self.client.indices.create(index=resolved, body=definition)
+                if base_index == INDEX_AGENT_MEMORY:
+                    self._upgrade_memory_index_mapping_if_needed(resolved)
             except Exception as exc:
                 if not _is_already_exists_conflict(exc):
                     raise
+
+    def _upgrade_memory_index_mapping_if_needed(self, resolved_index: str) -> None:
+        self.client.indices.put_mapping(
+            index=resolved_index,
+            body={
+                "properties": {
+                    "value": {
+                        "type": "object",
+                        "dynamic": True,
+                    },
+                    "return_spec_shape": {
+                        "type": "object",
+                        "dynamic": True,
+                    },
+                }
+            },
+        )
 
 
 class OpenSearchPlanRepository(PlanRepository):
@@ -143,6 +164,7 @@ class OpenSearchMemoryRepository(MemoryRepository):
         key: str,
         value: dict,
         return_spec_shape: dict,
+        scope: str = "session",
     ) -> str:
         self._validate_user_key_label(key)
         if not _matches_return_spec_contract(value, return_spec_shape):
@@ -166,15 +188,17 @@ class OpenSearchMemoryRepository(MemoryRepository):
             raise RuntimeError(msg)
 
         now = _utc_now_iso()
+        serialized_value = _serialize_memory_object(value)
+        serialized_spec = _serialize_memory_object(return_spec_shape)
         document = {
             "namespaced_key": namespaced_key,
             "tenant_id": tenant_id,
             "session_id": session_id,
             "task_id": task_id,
-            "scope": "session",
+            "scope": scope,
             "key": key,
-            "value": value,
-            "return_spec_shape": return_spec_shape,
+            "value": serialized_value,
+            "return_spec_shape": serialized_spec,
             "created_at": now,
             "updated_at": now,
             "embedding": embedding_vector,
@@ -189,13 +213,41 @@ class OpenSearchMemoryRepository(MemoryRepository):
         )
         return namespaced_key
 
+    async def search(
+        self,
+        tenant_id: str,
+        user_id: str,
+        session_id: str,
+        query_text: str,
+        scope: str,
+        top_k: int,
+    ) -> list[dict]:
+        _ = user_id
+        if self.embedding_service is None:
+            msg = "embedding_service_not_configured"
+            raise RuntimeError(msg)
+
+        query_vector = await self.embedding_service.embed_text(query_text)
+        results = await self.knn_search(
+            tenant_id=tenant_id,
+            query_vector=query_vector,
+            top_k=top_k,
+            scope=scope,
+        )
+
+        if scope != "session":
+            return results
+        return [item for item in results if item.get("session_id") == session_id]
+
     async def read(self, namespaced_key: str, release_lock: bool = False) -> dict | None:
         result = self.client.get(index=self.index_name, id=namespaced_key, ignore=[404])
         source = result.get("_source") if isinstance(result, dict) else None
         value = source.get("value") if isinstance(source, dict) else None
         if release_lock:
             self._locks.pop(namespaced_key, None)
-        return value if isinstance(value, dict) else None
+        if not isinstance(value, dict):
+            return None
+        return _deserialize_memory_object(value)
 
     async def knn_search(
         self,
@@ -260,7 +312,7 @@ class OpenSearchEventRepository(EventRepository):
             "session_id": event.session_id,
             "plan_id": event.plan_id,
             "task_id": event.task_id,
-            "payload": event.payload,
+            "payload": _normalize_event_payload(event.payload),
             "ts": event.ts.isoformat(),
         }
         validate_document_schema(INDEX_AGENT_EVENTS, document)
@@ -388,6 +440,67 @@ class _HeldLock:
 
 def _build_namespaced_key(tenant_id: str, session_id: str, task_id: str, key: str) -> str:
     return f"{tenant_id}:{session_id}:{task_id}:{key}"
+
+
+def _serialize_memory_object(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "blob_json": json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str),
+    }
+
+
+def _deserialize_memory_object(payload: dict[str, Any]) -> dict[str, Any]:
+    blob = payload.get("blob_json")
+    if isinstance(blob, str):
+        try:
+            parsed = json.loads(blob)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            return {"raw": blob}
+    return payload
+
+
+def _normalize_event_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    normalized: dict[str, Any] = {}
+    for key, value in payload.items():
+        if key == "function_calls" and isinstance(value, list):
+            normalized[key] = [_normalize_function_call(item) for item in value]
+            continue
+        if key == "function_responses" and isinstance(value, list):
+            normalized[key] = [_normalize_function_response(item) for item in value]
+            continue
+        if key == "tool_args":
+            normalized["tool_args_json"] = _to_json_string(value)
+            continue
+        normalized[key] = value
+    return normalized
+
+
+def _normalize_function_call(item: Any) -> dict[str, Any]:
+    if not isinstance(item, dict):
+        return {"raw_json": _to_json_string(item)}
+
+    normalized = dict(item)
+    if "args" in normalized:
+        normalized["args_json"] = _to_json_string(normalized.pop("args"))
+    return normalized
+
+
+def _normalize_function_response(item: Any) -> dict[str, Any]:
+    if not isinstance(item, dict):
+        return {"raw_json": _to_json_string(item)}
+
+    normalized = dict(item)
+    if "response" in normalized:
+        normalized["response_json"] = _to_json_string(normalized.pop("response"))
+    return normalized
+
+
+def _to_json_string(value: Any) -> str:
+    try:
+        return json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)
+    except Exception:
+        return str(value)
 
 
 def _matches_return_spec_contract(data: dict[str, Any], shape: dict[str, Any]) -> bool:

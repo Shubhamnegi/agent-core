@@ -1,40 +1,11 @@
 from __future__ import annotations
 
-from typing import Any, Protocol
+from typing import Protocol
 
 from agent_core.domain.models import (
-    AgentRunRequest,
     EventRecord,
     Plan,
-    PlannerOutput,
-    PlanStep,
-    StepExecutionResult,
 )
-
-
-class PlannerAgent(Protocol):
-    async def create_plan(self, request: AgentRunRequest, max_steps: int = 10) -> PlannerOutput:
-        ...
-
-    async def replan(
-        self,
-        request: AgentRunRequest,
-        completed_steps: list[PlanStep],
-        failed_step: PlanStep,
-        reason: str,
-        max_steps: int = 10,
-    ) -> PlannerOutput:
-        ...
-
-
-class ExecutorAgent(Protocol):
-    async def execute_step(
-        self,
-        request: AgentRunRequest,
-        plan: Plan,
-        step: PlanStep,
-    ) -> StepExecutionResult:
-        ...
 
 
 class PlanRepository(Protocol):
@@ -60,10 +31,22 @@ class MemoryRepository(Protocol):
         key: str,
         value: dict,
         return_spec_shape: dict,
+        scope: str = "session",
     ) -> str:
         ...
 
     async def read(self, namespaced_key: str, release_lock: bool = False) -> dict | None:
+        ...
+
+    async def search(
+        self,
+        tenant_id: str,
+        user_id: str,
+        session_id: str,
+        query_text: str,
+        scope: str,
+        top_k: int,
+    ) -> list[dict]:
         ...
 
 
@@ -72,11 +55,6 @@ class EventRepository(Protocol):
         ...
 
     async def list_by_plan(self, plan_id: str) -> list[EventRecord]:
-        ...
-
-
-class MessageBusPublisher(Protocol):
-    async def publish(self, topic: str, payload: dict[str, Any]) -> None:
         ...
 
 

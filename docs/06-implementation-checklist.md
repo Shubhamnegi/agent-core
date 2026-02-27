@@ -13,9 +13,9 @@ Use this checklist to track delivery against the Agentic Service Architecture Bl
 - [x] Orchestrator delegates planning and execution via ports (no direct skill calls in orchestrator).
 - [x] No `POST /agent/subagents` endpoint exists.
 - [x] Local docker compose created for queue, storage, and mock external skill service.
-- [ ] Runtime orchestration is ADK-based (`Runner` + root ADK agent) — currently custom orchestrator service.
-- [ ] Planner/Executor are implemented as ADK agents — currently mock local agents behind ports.
-- [x] Runtime orchestration scaffold is ADK-based (`InMemoryRunner` + root ADK workflow shell) behind `runtime_engine=adk_scaffold`.
+- [x] Runtime orchestration is ADK-based (`Runner` + root ADK agent).
+- [x] Planner/Executor are implemented as ADK agents.
+- [x] Runtime orchestration scaffold is ADK-based (`InMemoryRunner` + root ADK workflow shell).
 - [x] Planner/Executor scaffold roles exist as ADK custom agents.
 - [x] MCP integration is ADK `McpToolset` based with request-time endpoint/auth resolution from JSON config.
 - [x] Callback hook scaffold file added for ADK tool guardrails (`before_tool`, `after_tool`, `on_tool_error`).

@@ -7,7 +7,7 @@
       "transport": "streamable_http",
       "planner_tool_filter": [
         "find_relevant_skill",
-        "load_instructions"
+        "load_instruction"
       ],
       "auth_headers": [
         {
