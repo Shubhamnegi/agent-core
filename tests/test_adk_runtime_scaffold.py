@@ -45,8 +45,14 @@ def test_prompt_contract_routes_memory_via_coordinator_and_planner() -> None:
     assert "memory_subagent_c" in COORDINATOR_INSTRUCTION
     assert "persist durable memory" in COORDINATOR_INSTRUCTION
     assert "search_relevant_memory" in PLANNER_INSTRUCTION
+    assert "intent-rich memory queries" in PLANNER_INSTRUCTION
     assert "save_user_memory" in MEMORY_INSTRUCTION
     assert "save_action_memory" in MEMORY_INSTRUCTION
+    assert "memory_text" in MEMORY_INSTRUCTION
+    assert "domain" in MEMORY_INSTRUCTION
+    assert "intent" in MEMORY_INSTRUCTION
+    assert "entities" in MEMORY_INSTRUCTION
+    assert "query_hints" in MEMORY_INSTRUCTION
 
 
 def _write_mcp_config(path: Path) -> None:
