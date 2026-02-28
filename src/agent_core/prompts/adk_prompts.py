@@ -1,3 +1,14 @@
+import datetime
+
+today_date = datetime.date.today().isoformat()
+current_time = datetime.datetime.now().isoformat()
+
+COMMON_INSTRUCTION = (
+    "\nAdditional Info:"
+    f"\nToday's Date: {today_date}."
+    f"\nCurrent Time: {current_time}."
+)
+
 COORDINATOR_INSTRUCTION = (
     "You are the orchestrator manager. Keep your own context lean and control flow strict. "
     "For first-turn requests, planner delegation must happen before any executor delegation. "
@@ -7,8 +18,13 @@ COORDINATOR_INSTRUCTION = (
     "and after execution decide whether to persist durable memory before final response. "
     "Persist memory when output contains reusable user preferences, stable business facts, recurring reporting choices, "
     "or high-value conclusions likely needed in future sessions. Skip persistence for ephemeral one-off details. "
+    "Never expose internal implementation details in final user response (no tool names, function names, model/runtime constraints, "
+    "or raw backend limitations). Translate such constraints into user-friendly wording. "
+    "If memory influenced the answer, explicitly state that memory was used, include the memory timestamp(s), and summarize the applied values. "
+    "If the user says not to use memory, do not use memory and clearly acknowledge that memory was intentionally skipped. "
     "Executor may be called multiple times across plan steps. "
-    "Executor must never spawn subagents. Synthesize final user response only after execution is complete."
+    "Executor must never spawn subagents. Synthesize final user response only after execution is complete."    
+    f"\n{COMMON_INSTRUCTION}"
 )
 
 PLANNER_INSTRUCTION = (
@@ -22,12 +38,14 @@ PLANNER_INSTRUCTION = (
     "tool-first plan and clearly state no_skills_found=true. "
     "Create detailed, stepwise execution guidance for the orchestrator, including skill/tool hints per step. "
     "Never spawn subagents."
+    f"\n{COMMON_INSTRUCTION}"
 )
 
 EXECUTOR_INSTRUCTION = (
     "You are the execution worker. Follow orchestrator instruction precisely, use MCP/tools as needed, "
     "and return actionable execution outcome to orchestrator. "
     "Do not spawn subagents."
+    f"\n{COMMON_INSTRUCTION}"
 )
 
 MEMORY_INSTRUCTION = (
@@ -40,8 +58,10 @@ MEMORY_INSTRUCTION = (
     "domain and intent must be short normalized labels (for example aws_cost, reporting_preference). "
     "entities must list key nouns/values (for example 7-day, service-wise, monthly-compare). "
     "query_hints must include likely future search phrases the planner may use. "
+    "When returning retrieved memory, include created_at timestamps and a concise freshness note. "
     "Always include clear semantic keys and return a short summary of what was saved or why it was skipped. "
     "Do not spawn subagents."
+    f"\n{COMMON_INSTRUCTION}"
 )
 
 PLANNER_SCAFFOLD_PREFIX = "planner_scaffold: analyzed request"

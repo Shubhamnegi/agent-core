@@ -27,6 +27,9 @@ class _TraceContext:
     session_id: str
     plan_id: str
     require_planner_first_transfer: bool
+    allow_memory_usage: bool = True
+    require_memory_precheck: bool = False
+    memory_precheck_seen: bool = False
     planner_transfer_seen: bool = False
     planner_find_skill_called: bool = False
     planner_load_skill_called: bool = False
@@ -47,6 +50,8 @@ def bind_trace_context(
     session_id: str,
     plan_id: str,
     require_planner_first_transfer: bool = False,
+    allow_memory_usage: bool = True,
+    require_memory_precheck: bool = False,
     planner_expected_tools: list[str] | None = None,
 ) -> Token[_TraceContext | None]:
     return _trace_context.set(
@@ -56,6 +61,8 @@ def bind_trace_context(
             session_id=session_id,
             plan_id=plan_id,
             require_planner_first_transfer=require_planner_first_transfer,
+            allow_memory_usage=allow_memory_usage,
+            require_memory_precheck=require_memory_precheck,
             planner_expected_tools=planner_expected_tools,
         )
     )
@@ -290,6 +297,42 @@ async def before_tool_callback(
         destination = args.get("agent_name") if isinstance(args, dict) else None
         trace_context = _trace_context.get()
         if trace_context is not None and isinstance(destination, str):
+            if destination == "memory_subagent_c" and not trace_context.allow_memory_usage:
+                logger.info(
+                    "transfer_blocked_memory_disabled",
+                    extra={
+                        "tool_name": tool.name,
+                        "tool_args": args,
+                        "reason": "memory_usage_disabled_by_user",
+                    },
+                )
+                return {
+                    "status": "blocked",
+                    "reason": "memory_usage_disabled_by_user",
+                }
+
+            if destination == "memory_subagent_c":
+                trace_context.memory_precheck_seen = True
+
+            if (
+                destination in {"planner_subagent_a", "executor_subagent_b"}
+                and trace_context.require_memory_precheck
+                and not trace_context.memory_precheck_seen
+            ):
+                logger.warning(
+                    "transfer_blocked_memory_precheck_required",
+                    extra={
+                        "tool_name": tool.name,
+                        "tool_args": args,
+                        "reason": "memory_precheck_required_before_execution",
+                    },
+                )
+                return {
+                    "status": "blocked",
+                    "reason": "memory_precheck_required_before_execution",
+                    "required_agent": "memory_subagent_c",
+                }
+
             if destination == "planner_subagent_a":
                 trace_context.planner_transfer_seen = True
                 trace_context.planner_find_skill_called = False

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import os
+import re
+from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
@@ -145,6 +147,12 @@ class AdkRuntimeScaffold:
     async def run(self, request: AgentRunRequest) -> AgentRunResponse:
         is_first_turn = await self._ensure_session(request)
         plan_id = f"plan_adk_{uuid4().hex[:12]}"
+        memory_disabled_by_user = _message_disables_memory_usage(request.message)
+        requires_memory_precheck = is_first_turn or _message_requests_memory_lookup(
+            request.message
+        )
+        if memory_disabled_by_user:
+            requires_memory_precheck = False
         trace_token = None
         tool_context_token = bind_tool_runtime_context(
             tenant_id=request.tenant_id,
@@ -161,6 +169,8 @@ class AdkRuntimeScaffold:
                 session_id=request.session_id,
                 plan_id=plan_id,
                 require_planner_first_transfer=is_first_turn,
+                allow_memory_usage=not memory_disabled_by_user,
+                require_memory_precheck=requires_memory_precheck,
                 planner_expected_tools=(
                     list(self._resolved_planner_endpoint.planner_tools)
                     if self._resolved_planner_endpoint is not None
@@ -174,14 +184,25 @@ class AdkRuntimeScaffold:
         )
 
         texts: list[str] = []
+        memory_metadata = _MemoryUsageMetadata()
         try:
             async for event in events:
                 text = _extract_event_text(event)
                 if text:
                     texts.append(text)
+                memory_metadata = _merge_memory_metadata(
+                    memory_metadata,
+                    _extract_memory_usage_metadata(_extract_event_function_responses(event)),
+                )
                 await self._mirror_adk_event(request=request, plan_id=plan_id, event=event)
 
             response = texts[-1] if texts else "adk_scaffold_response: no output"
+            response = _sanitize_user_response(response)
+            response = _apply_memory_disclosure(
+                response=response,
+                memory_metadata=memory_metadata,
+                memory_disabled_by_user=memory_disabled_by_user,
+            )
             await self._index_session_in_memory(request)
             return AgentRunResponse(
                 status="complete",
@@ -332,6 +353,184 @@ def _build_initial_session_state(request: AgentRunRequest) -> dict[str, Any]:
         "user_id": request.user_id,
         "session_id": request.session_id,
     }
+
+
+def _message_requests_memory_lookup(message: str) -> bool:
+    lowered = message.lower()
+    memory_markers = (
+        "check memory",
+        "from memory",
+        "search memory",
+        "what do you remember",
+        "based on my preference",
+        "my preference",
+        "remembered",
+        "recall",
+    )
+    return any(marker in lowered for marker in memory_markers)
+
+
+def _message_disables_memory_usage(message: str) -> bool:
+    lowered = message.lower()
+    disable_markers = (
+        "don't use memory",
+        "do not use memory",
+        "dont use memory",
+        "without memory",
+        "ignore memory",
+        "skip memory",
+        "no memory",
+    )
+    return any(marker in lowered for marker in disable_markers)
+
+
+class _MemoryUsageMetadata:
+    def __init__(
+        self,
+        used: bool = False,
+        latest_timestamp: str | None = None,
+        summary: str | None = None,
+    ) -> None:
+        self.used = used
+        self.latest_timestamp = latest_timestamp
+        self.summary = summary
+
+
+def _merge_memory_metadata(
+    left: _MemoryUsageMetadata,
+    right: _MemoryUsageMetadata,
+) -> _MemoryUsageMetadata:
+    used = left.used or right.used
+    latest = _max_iso_timestamp(left.latest_timestamp, right.latest_timestamp)
+    summary = left.summary or right.summary
+    return _MemoryUsageMetadata(used=used, latest_timestamp=latest, summary=summary)
+
+
+def _extract_memory_usage_metadata(
+    function_responses: list[dict[str, Any]],
+) -> _MemoryUsageMetadata:
+    output = _MemoryUsageMetadata()
+    for item in function_responses:
+        if item.get("name") != "search_relevant_memory":
+            continue
+        response_payload = item.get("response")
+        if not isinstance(response_payload, dict):
+            continue
+
+        count = response_payload.get("count")
+        if isinstance(count, int) and count > 0:
+            output.used = True
+
+        results = response_payload.get("results")
+        if not isinstance(results, list):
+            continue
+
+        for result in results:
+            if not isinstance(result, dict):
+                continue
+            created_at = result.get("created_at")
+            if isinstance(created_at, str) and created_at:
+                output.latest_timestamp = _max_iso_timestamp(output.latest_timestamp, created_at)
+
+            summary = _extract_memory_summary(result)
+            if summary and not output.summary:
+                output.summary = summary
+    return output
+
+
+def _extract_memory_summary(result: dict[str, Any]) -> str | None:
+    value = result.get("value")
+    if not isinstance(value, dict):
+        return None
+
+    blob = value.get("blob_json")
+    if isinstance(blob, str):
+        try:
+            parsed = json.loads(blob)
+            if isinstance(parsed, dict):
+                return _summarize_memory_value(parsed)
+        except Exception:
+            return None
+
+    return _summarize_memory_value(value)
+
+
+def _summarize_memory_value(value: dict[str, Any]) -> str | None:
+    memory_text = value.get("memory_text")
+    if isinstance(memory_text, str) and memory_text:
+        return memory_text
+
+    summary_fields: list[str] = []
+    for field_name in ("domain", "intent"):
+        field_value = value.get(field_name)
+        if isinstance(field_value, str) and field_value:
+            summary_fields.append(f"{field_name}: {field_value}")
+    entities = value.get("entities")
+    if isinstance(entities, list) and entities:
+        summary_fields.append(f"entities: {', '.join(str(item) for item in entities[:5])}")
+
+    if not summary_fields:
+        return None
+    return "; ".join(summary_fields)
+
+
+def _max_iso_timestamp(left: str | None, right: str | None) -> str | None:
+    if left is None:
+        return right
+    if right is None:
+        return left
+    return right if right > left else left
+
+
+def _sanitize_user_response(response: str) -> str:
+    sanitized = response
+    sanitized = sanitized.replace(
+        "The `get_cost_and_usage_comparisons` tool requires both the baseline and comparison periods to be exactly one month long and to start on the first day of the month.",
+        "The requested period-over-period comparison is not available for this exact date range.",
+    )
+    sanitized = re.sub(
+        r"`get_[a-zA-Z0-9_]+`",
+        "the requested comparison",
+        sanitized,
+    )
+    return sanitized
+
+
+def _apply_memory_disclosure(
+    response: str,
+    memory_metadata: _MemoryUsageMetadata,
+    memory_disabled_by_user: bool,
+) -> str:
+    if memory_disabled_by_user:
+        prefix = "Note: I did not use memory for this response because you asked to skip memory."
+        return f"{prefix}\n\n{response}"
+
+    if not memory_metadata.used:
+        return response
+
+    timestamp = memory_metadata.latest_timestamp or "unknown time"
+    summary = memory_metadata.summary or "a previously saved preference"
+    stale_note = _memory_staleness_note(memory_metadata.latest_timestamp)
+    prefix = (
+        f"Note: I used saved memory from {timestamp} to tailor this response. "
+        f"Applied memory: {summary}."
+    )
+    if stale_note:
+        prefix = f"{prefix} {stale_note}"
+    return f"{prefix}\n\n{response}"
+
+
+def _memory_staleness_note(timestamp: str | None) -> str:
+    if not timestamp:
+        return ""
+    try:
+        created_at = datetime.fromisoformat(timestamp)
+    except Exception:
+        return ""
+    age_days = (datetime.now(created_at.tzinfo) - created_at).days
+    if age_days >= 30:
+        return f"Memory may be stale (saved about {age_days} days ago)."
+    return ""
 
 
 def _extract_event_text(event: Any) -> str:

@@ -19,6 +19,11 @@ from agent_core.infra.adk.callbacks import (
     reset_trace_context,
 )
 from agent_core.infra.adk.runtime import AdkRuntimeScaffold
+from agent_core.infra.adk.runtime import (
+    _message_disables_memory_usage,
+    _message_requests_memory_lookup,
+    _sanitize_user_response,
+)
 from agent_core.prompts import COORDINATOR_INSTRUCTION, MEMORY_INSTRUCTION, PLANNER_INSTRUCTION
 
 
@@ -417,6 +422,101 @@ async def test_before_tool_callback_blocks_executor_transfer_on_first_turn() -> 
     assert blocked is not None
     assert blocked["status"] == "blocked"
     assert blocked["reason"] == "planner_required_before_executor_first_turn"
+
+
+@pytest.mark.asyncio
+async def test_before_tool_callback_blocks_planner_when_memory_precheck_required() -> None:
+    token = bind_trace_context(
+        event_repo=_FakeEventRepository(),  # type: ignore[arg-type]
+        tenant_id="tenant_1",
+        session_id="session_1",
+        plan_id="plan_adk_trace_memory_1",
+        require_planner_first_transfer=False,
+        require_memory_precheck=True,
+    )
+    try:
+        blocked = await before_tool_callback(
+            tool=SimpleNamespace(name="transfer_to_agent"),
+            args={"agent_name": "planner_subagent_a"},
+            tool_context=SimpleNamespace(agent_name="orchestrator_manager"),
+        )
+    finally:
+        reset_trace_context(token)
+
+    assert blocked is not None
+    assert blocked["status"] == "blocked"
+    assert blocked["reason"] == "memory_precheck_required_before_execution"
+    assert blocked["required_agent"] == "memory_subagent_c"
+
+
+@pytest.mark.asyncio
+async def test_before_tool_callback_allows_planner_after_memory_precheck() -> None:
+    token = bind_trace_context(
+        event_repo=_FakeEventRepository(),  # type: ignore[arg-type]
+        tenant_id="tenant_1",
+        session_id="session_1",
+        plan_id="plan_adk_trace_memory_2",
+        require_planner_first_transfer=False,
+        require_memory_precheck=True,
+    )
+    try:
+        memory_transfer = await before_tool_callback(
+            tool=SimpleNamespace(name="transfer_to_agent"),
+            args={"agent_name": "memory_subagent_c"},
+            tool_context=SimpleNamespace(agent_name="orchestrator_manager"),
+        )
+        planner_transfer = await before_tool_callback(
+            tool=SimpleNamespace(name="transfer_to_agent"),
+            args={"agent_name": "planner_subagent_a"},
+            tool_context=SimpleNamespace(agent_name="orchestrator_manager"),
+        )
+    finally:
+        reset_trace_context(token)
+
+    assert memory_transfer is None
+    assert planner_transfer is None
+
+
+@pytest.mark.asyncio
+async def test_before_tool_callback_blocks_memory_when_user_disabled_it() -> None:
+    token = bind_trace_context(
+        event_repo=_FakeEventRepository(),  # type: ignore[arg-type]
+        tenant_id="tenant_1",
+        session_id="session_1",
+        plan_id="plan_adk_trace_memory_3",
+        require_planner_first_transfer=False,
+        allow_memory_usage=False,
+        require_memory_precheck=False,
+    )
+    try:
+        blocked = await before_tool_callback(
+            tool=SimpleNamespace(name="transfer_to_agent"),
+            args={"agent_name": "memory_subagent_c"},
+            tool_context=SimpleNamespace(agent_name="orchestrator_manager"),
+        )
+    finally:
+        reset_trace_context(token)
+
+    assert blocked is not None
+    assert blocked["status"] == "blocked"
+    assert blocked["reason"] == "memory_usage_disabled_by_user"
+
+
+def test_runtime_memory_intent_and_opt_out_detection_helpers() -> None:
+    assert _message_requests_memory_lookup("Please check memory before answering") is True
+    assert _message_requests_memory_lookup("Help me analyze the cost") is False
+    assert _message_disables_memory_usage("Don't use memory for this") is True
+    assert _message_disables_memory_usage("Use all context") is False
+
+
+def test_runtime_sanitizes_internal_tool_names_in_final_response() -> None:
+    response = (
+        "The `get_cost_and_usage_comparisons` tool requires both the baseline and "
+        "comparison periods to be exactly one month long and to start on the first day of the month."
+    )
+    sanitized = _sanitize_user_response(response)
+    assert "get_cost_and_usage_comparisons" not in sanitized
+    assert "requested period-over-period comparison" in sanitized
 
 
 @pytest.mark.asyncio
