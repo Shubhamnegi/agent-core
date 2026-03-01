@@ -22,15 +22,14 @@ from agent_core.infra.adk.callbacks import (
 from agent_core.infra.adk.tools import (
     exec_python,
     read_lines,
-    read_memory,
     read_slack_messages,
-    save_action_memory,
     send_email_smtp,
     send_slack_message,
+    write_temp,
+    read_memory,
+    save_action_memory,
     save_user_memory,
     search_relevant_memory,
-    write_memory,
-    write_temp,
 )
 from agent_core.prompts import (
     COMMUNICATOR_INSTRUCTION,
@@ -206,13 +205,8 @@ def _extract_user_text(ctx: Any) -> str:
 
 
 def _infra_tools() -> list[Any]:
-    """Why: keep a single canonical infra tool bundle shared by planner/executor."""
+    """Why: keep a canonical non-memory infra tool bundle shared by planner/executor."""
     return [
-        write_memory,
-        read_memory,
-        save_user_memory,
-        save_action_memory,
-        search_relevant_memory,
         write_temp,
         read_lines,
         exec_python,

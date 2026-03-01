@@ -34,7 +34,7 @@ Use this checklist to track delivery against the Agentic Service Architecture Bl
 - [x] Session lifecycle uses ADK `SessionService` abstraction.
 - [x] Cross-session retrieval uses ADK `MemoryService` abstraction.
 - [x] Infra operation scaffold functions added for ADK tool wrapping.
-- [x] Skill execution/discovery uses ADK `McpToolset` with per-step `tool_filter`.
+- [x] Skill execution/discovery uses ADK `McpToolset` with request-time endpoint/auth resolution.
 - [x] MCP toolset/auth resolution occurs on incoming request, not at app startup.
 - [x] MCP auth supports request-derived headers plus env fallback per endpoint config.
 - [x] Contract guardrail callback scaffold added (`before_tool` / `after_tool` / error hooks).

@@ -144,7 +144,6 @@ async def _run_runtime_direct(message: str) -> CheckResult:
         mcp_session_timeout=mcp_timeout,
     )
     runtime.configure_mcp_for_request({})
-    runtime.configure_executor_step_tools(["find_relevant_skill"])
 
     planner = getattr(runtime, "_resolved_planner_endpoint", None)
     endpoints = getattr(runtime, "_resolved_executor_endpoints", [])

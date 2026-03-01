@@ -88,6 +88,19 @@ async def save_user_memory(
 
     parsed_spec = _parse_json_object(return_spec_json) if return_spec_json else None
     effective_spec = parsed_spec or _derive_return_spec(parsed_memory)
+    duplicate = await _find_duplicate_memory(
+        context=context,
+        parsed_memory=parsed_memory,
+        scope="user",
+    )
+    if duplicate is not None:
+        return {
+            "status": "duplicate_skipped",
+            "memory_type": "user_memory",
+            "scope": "user",
+            "namespaced_key": duplicate,
+            "reason": "similar_memory_exists",
+        }
     namespaced_key = await context.memory_repo.write(
         tenant_id=context.tenant_id,
         session_id=context.session_id,
@@ -133,6 +146,19 @@ async def save_action_memory(
 
     parsed_spec = _parse_json_object(return_spec_json) if return_spec_json else None
     effective_spec = parsed_spec or _derive_return_spec(parsed_memory)
+    duplicate = await _find_duplicate_memory(
+        context=context,
+        parsed_memory=parsed_memory,
+        scope="session",
+    )
+    if duplicate is not None:
+        return {
+            "status": "duplicate_skipped",
+            "memory_type": "action_memory",
+            "scope": "session",
+            "namespaced_key": duplicate,
+            "reason": "similar_memory_exists",
+        }
     namespaced_key = await context.memory_repo.write(
         tenant_id=context.tenant_id,
         session_id=context.session_id,
@@ -216,3 +242,44 @@ def _parse_json_object(raw: str | None) -> dict[str, Any] | None:
     except json.JSONDecodeError:
         return None
     return parsed if isinstance(parsed, dict) else None
+
+
+def _memory_fingerprint(memory: dict[str, Any]) -> str:
+    return json.dumps(memory, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+async def _find_duplicate_memory(
+    context: Any,
+    parsed_memory: dict[str, Any],
+    scope: str,
+) -> str | None:
+    query_text = parsed_memory.get("memory_text")
+    if not isinstance(query_text, str) or not query_text.strip():
+        query_text = _memory_fingerprint(parsed_memory)
+
+    try:
+        candidates = await context.memory_repo.search(
+            tenant_id=context.tenant_id,
+            user_id=context.user_id,
+            session_id=context.session_id,
+            query_text=query_text,
+            scope=scope,
+            top_k=10,
+        )
+    except Exception:
+        return None
+
+    target_fp = _memory_fingerprint(parsed_memory)
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        existing_value = candidate.get("value")
+        if not isinstance(existing_value, dict):
+            continue
+        if _memory_fingerprint(existing_value) != target_fp:
+            continue
+
+        namespaced_key = candidate.get("namespaced_key")
+        if isinstance(namespaced_key, str) and namespaced_key:
+            return namespaced_key
+    return None

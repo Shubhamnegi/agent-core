@@ -149,21 +149,10 @@ class AdkRuntimeScaffold:
             default_model_name=model_name,
             config_path=agent_models_config_path,
         )
-        self.executor_allowed_skills: list[str] = []
         self.planner_mcp_toolset: McpToolset | None = None
         self.executor_mcp_toolsets: list[McpToolset] = []
         self._resolved_planner_endpoint: ResolvedMcpEndpoint | None = None
         self._resolved_executor_endpoints: list[ResolvedMcpEndpoint] = []
-        self._rebuild_runtime_graph()
-
-    def configure_executor_step_tools(self, allowed_skills: list[str]) -> None:
-        self.executor_allowed_skills = list(allowed_skills)
-        logger.info(
-            "adk_runtime_executor_tools_configured",
-            extra={
-                "executor_allowed_skills": self.executor_allowed_skills,
-            },
-        )
         self._rebuild_runtime_graph()
 
     def configure_mcp_for_request(self, request_headers: dict[str, str]) -> None:
@@ -191,7 +180,6 @@ class AdkRuntimeScaffold:
         )
         self.executor_mcp_toolsets = build_executor_mcp_toolsets(
             self._resolved_executor_endpoints,
-            self.executor_allowed_skills,
             timeout=self.mcp_session_timeout,
         )
         logger.info(
@@ -325,7 +313,6 @@ class AdkRuntimeScaffold:
                     "executor_endpoints": [
                         _endpoint_debug(endpoint) for endpoint in self._resolved_executor_endpoints
                     ],
-                    "executor_allowed_skills": self.executor_allowed_skills,
                     "model_name": self.model_name,
                     "mcp_config_path": self.mcp_config_path,
                     "error_type": type(exc).__name__,

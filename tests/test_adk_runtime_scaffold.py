@@ -165,8 +165,11 @@ def test_prompt_contract_routes_memory_via_coordinator_and_planner() -> None:
     assert "communicator_subagent_d" in COORDINATOR_INSTRUCTION
     assert "memory_subagent_c" in COORDINATOR_INSTRUCTION
     assert "persist durable memory" in COORDINATOR_INSTRUCTION
-    assert "search_relevant_memory" in PLANNER_INSTRUCTION
-    assert "intent-rich memory queries" in PLANNER_INSTRUCTION
+    assert "always forward retrieved memory summary/facts" in COORDINATOR_INSTRUCTION
+    assert "Do not call planner_subagent_a with an empty memory context" in COORDINATOR_INSTRUCTION
+    assert "Never call memory tools directly" in PLANNER_INSTRUCTION
+    assert "Use memory context provided by orchestrator_manager" in PLANNER_INSTRUCTION
+    assert "you must incorporate those facts/preferences explicitly" in PLANNER_INSTRUCTION
     assert "save_user_memory" in MEMORY_INSTRUCTION
     assert "save_action_memory" in MEMORY_INSTRUCTION
     assert "memory_text" in MEMORY_INSTRUCTION
@@ -208,7 +211,7 @@ def _write_mcp_config(path: Path) -> None:
         json.dump(payload, handle)
 
 
-def test_adk_runtime_wires_mcp_toolset_filters_for_planner_and_executor_step(
+def test_adk_runtime_wires_mcp_toolsets_for_planner_and_executor_endpoints(
     tmp_path: Path,
 ) -> None:
     config_path = tmp_path / "mcp_config.json"
@@ -228,14 +231,7 @@ def test_adk_runtime_wires_mcp_toolset_filters_for_planner_and_executor_step(
     assert runtime._resolved_planner_endpoint is not None
     assert runtime._resolved_planner_endpoint.headers == {"x-api-key": "request-key"}
     assert len(runtime._resolved_executor_endpoints) == 2
-
-    runtime.configure_executor_step_tools(["skill_sales", "skill_inventory"])
-
     assert len(runtime.executor_mcp_toolsets) == 2
-    assert all(
-        toolset.tool_filter == ["skill_sales", "skill_inventory"]
-        for toolset in runtime.executor_mcp_toolsets
-    )
 
 
 def test_adk_subagents_always_include_infra_tool_suite() -> None:
@@ -245,11 +241,6 @@ def test_adk_subagents_always_include_infra_tool_suite() -> None:
     planner_tools = {getattr(tool, "__name__", "") for tool in planner.tools}
     executor_tools = {getattr(tool, "__name__", "") for tool in executor.tools}
     expected = {
-        "write_memory",
-        "read_memory",
-        "save_user_memory",
-        "save_action_memory",
-        "search_relevant_memory",
         "write_temp",
         "read_lines",
         "exec_python",
@@ -257,6 +248,16 @@ def test_adk_subagents_always_include_infra_tool_suite() -> None:
 
     assert expected.issubset(planner_tools)
     assert expected.issubset(executor_tools)
+    assert "write_memory" not in planner_tools
+    assert "read_memory" not in planner_tools
+    assert "save_user_memory" not in planner_tools
+    assert "save_action_memory" not in planner_tools
+    assert "search_relevant_memory" not in planner_tools
+    assert "write_memory" not in executor_tools
+    assert "read_memory" not in executor_tools
+    assert "save_user_memory" not in executor_tools
+    assert "save_action_memory" not in executor_tools
+    assert "search_relevant_memory" not in executor_tools
 
 
 def test_communicator_agent_exposes_communication_tools_only() -> None:
@@ -498,8 +499,8 @@ async def test_adk_runtime_mirror_concatenates_multi_part_text() -> None:
 async def test_before_tool_callback_logs_tool_args_without_logrecord_collision(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    tool = SimpleNamespace(name="read_memory")
-    payload = {"key": "summary"}
+    tool = SimpleNamespace(name="read_lines")
+    payload = {"path": "tmp/report.txt", "start": 1, "end": 10}
 
     with caplog.at_level("INFO"):
         result = await before_tool_callback(tool=tool, args=payload, tool_context=None)
@@ -664,6 +665,66 @@ async def test_before_tool_callback_blocks_memory_when_user_disabled_it() -> Non
     assert blocked is not None
     assert blocked["status"] == "blocked"
     assert blocked["reason"] == "memory_usage_disabled_by_user"
+
+
+@pytest.mark.asyncio
+async def test_before_tool_callback_blocks_memory_transfer_from_non_orchestrator() -> None:
+    token = bind_trace_context(
+        event_repo=_FakeEventRepository(),  # type: ignore[arg-type]
+        tenant_id="tenant_1",
+        session_id="session_1",
+        plan_id="plan_adk_trace_memory_4",
+        require_planner_first_transfer=False,
+    )
+    try:
+        blocked = await before_tool_callback(
+            tool=SimpleNamespace(name="transfer_to_agent"),
+            args={"agent_name": "memory_subagent_c"},
+            tool_context=SimpleNamespace(agent_name="planner_subagent_a"),
+        )
+    finally:
+        reset_trace_context(token)
+
+    assert blocked is not None
+    assert blocked["status"] == "blocked"
+    assert blocked["reason"] == "memory_transfer_allowed_only_from_orchestrator"
+
+
+@pytest.mark.asyncio
+async def test_before_tool_callback_blocks_memory_subagent_transfer_to_non_orchestrator() -> None:
+    token = bind_trace_context(
+        event_repo=_FakeEventRepository(),  # type: ignore[arg-type]
+        tenant_id="tenant_1",
+        session_id="session_1",
+        plan_id="plan_adk_trace_memory_5",
+        require_planner_first_transfer=False,
+    )
+    try:
+        blocked = await before_tool_callback(
+            tool=SimpleNamespace(name="transfer_to_agent"),
+            args={"agent_name": "planner_subagent_a"},
+            tool_context=SimpleNamespace(agent_name="memory_subagent_c"),
+        )
+    finally:
+        reset_trace_context(token)
+
+    assert blocked is not None
+    assert blocked["status"] == "blocked"
+    assert blocked["reason"] == "memory_subagent_must_return_to_orchestrator"
+
+
+@pytest.mark.asyncio
+async def test_before_tool_callback_blocks_memory_tool_for_non_memory_agent() -> None:
+    blocked = await before_tool_callback(
+        tool=SimpleNamespace(name="search_relevant_memory"),
+        args={"query": "cost preference"},
+        tool_context=SimpleNamespace(agent_name="planner_subagent_a"),
+    )
+
+    assert blocked is not None
+    assert blocked["status"] == "blocked"
+    assert blocked["reason"] == "memory_tools_reserved_for_memory_subagent"
+    assert blocked["required_agent"] == "memory_subagent_c"
 
 
 @pytest.mark.asyncio

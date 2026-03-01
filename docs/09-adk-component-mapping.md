@@ -28,8 +28,8 @@ This mapping is based on:
 | Planner (SubAgent-A) | Dedicated `LlmAgent` with planning prompt + planner primitives (`BuiltInPlanner` / `PlanReActPlanner`) | Produces stepwise plan with `return_spec` contract per step and feasibility checks (≤10 steps). |
 | Executor (SubAgent-B, one step at a time) | Dedicated `LlmAgent` or `BaseAgent` per execution role | Executes exactly one plan step and returns structured result/status (`ok`, `failed`, `insufficient`). |
 | Infra tool suite (`write_memory`, `read_memory`, `write_temp`, `read_lines`, `exec_python`) | ADK `FunctionTool` / `BaseTool` set | Implement each infra function as ADK tools and bind to planner/executor agents. |
-| Skill discovery + skill execution via MCP | `McpToolset` (`google.adk.tools.mcp_tool`) | Planner uses discovery/load skills; executor uses step-allowed skills via filtered MCP toolset. |
-| Allowed skill enforcement per step | `McpToolset.tool_filter` + step-scoped tool construction | Build per-step MCP toolset exposing only step-approved skill names. |
+| Skill discovery + skill execution via MCP | `McpToolset` (`google.adk.tools.mcp_tool`) | Planner uses discovery/load skills; executor gets MCP endpoint tools plus infra tools. |
+| Executor MCP exposure | `McpToolset` per resolved endpoint | Build executor MCP toolsets from resolved endpoint configs at request time. |
 | SubAgents cannot spawn SubAgents | Agent hierarchy policy + callback/plugin guard | Enforce in `before_tool`/policy logic: block transfer/spawn attempts from executor context. |
 | Plan object as first-class persisted document | Custom `PlanRepository` + OpenSearch adapter | ADK does not provide an OpenSearch plan schema; keep this as our storage adapter contract. |
 | Plan states (`pending`, `planning`, `executing`, `replanning`, `complete`, `failed`) | ADK Events + custom plan persistence | Use ADK event stream for runtime transitions and persist canonical plan status in `agent_plans`. |
@@ -51,7 +51,7 @@ This mapping is based on:
 1. Root coordinator: `LlmAgent` with planner/executor roles as sub-agents.
 2. Deterministic orchestration shell: `SequentialAgent` for strict step progression.
 3. Retry shell: `LoopAgent` around failed-step replan path with max=3.
-4. Skill integration: `McpToolset` with per-step `tool_filter`.
+4. Skill integration: `McpToolset` for planner discovery and executor endpoint tools.
 5. Execution telemetry and policy enforcement: callbacks/plugins (`before_tool`, `after_tool`, `on_tool_error`, `on_event`).
 6. Runtime: `Runner` + persistent `SessionService` and `MemoryService` implementations bridged to storage adapter.
 

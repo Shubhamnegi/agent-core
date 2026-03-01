@@ -23,6 +23,13 @@ logger = logging.getLogger(__name__)
 _PROMPT_TEXT_LIMIT = 2000
 _RESPONSE_TEXT_LIMIT = 2000
 _TRACE_TEXT_LIMIT = 12000
+_MEMORY_TOOL_NAMES = {
+    "write_memory",
+    "read_memory",
+    "save_user_memory",
+    "save_action_memory",
+    "search_relevant_memory",
+}
 
 
 @dataclass(slots=True)
@@ -317,10 +324,57 @@ async def before_tool_callback(
     if tool.name == "write_memory" and "return_spec" not in args:
         return {"status": "contract_violation", "reason": "missing return_spec"}
 
+    if tool.name in _MEMORY_TOOL_NAMES and agent_name != "memory_subagent_c":
+        logger.warning(
+            "tool_call_blocked_memory_tool_agent_restriction",
+            extra={
+                "tool_name": tool.name,
+                "agent": agent_name,
+                "reason": "memory_tools_reserved_for_memory_subagent",
+            },
+        )
+        return {
+            "status": "blocked",
+            "reason": "memory_tools_reserved_for_memory_subagent",
+            "required_agent": "memory_subagent_c",
+        }
+
     if tool.name == "transfer_to_agent":
         destination = args.get("agent_name") if isinstance(args, dict) else None
         trace_context = _trace_context.get()
         if trace_context is not None and isinstance(destination, str):
+            if destination == "memory_subagent_c" and agent_name != "orchestrator_manager":
+                logger.warning(
+                    "transfer_blocked_memory_orchestrator_only",
+                    extra={
+                        "tool_name": tool.name,
+                        "tool_args": args,
+                        "agent": agent_name,
+                        "reason": "memory_transfer_allowed_only_from_orchestrator",
+                    },
+                )
+                return {
+                    "status": "blocked",
+                    "reason": "memory_transfer_allowed_only_from_orchestrator",
+                    "required_agent": "orchestrator_manager",
+                }
+
+            if agent_name == "memory_subagent_c" and destination != "orchestrator_manager":
+                logger.warning(
+                    "transfer_blocked_memory_destination_orchestrator_only",
+                    extra={
+                        "tool_name": tool.name,
+                        "tool_args": args,
+                        "agent": agent_name,
+                        "reason": "memory_subagent_must_return_to_orchestrator",
+                    },
+                )
+                return {
+                    "status": "blocked",
+                    "reason": "memory_subagent_must_return_to_orchestrator",
+                    "required_agent": "orchestrator_manager",
+                }
+
             if destination == "communicator_subagent_d" and agent_name != "orchestrator_manager":
                 logger.warning(
                     "transfer_blocked_communicator_orchestrator_only",

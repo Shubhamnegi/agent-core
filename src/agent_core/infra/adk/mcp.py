@@ -145,23 +145,18 @@ def build_planner_mcp_toolset(
 
 def build_executor_mcp_toolset(
     endpoint: ResolvedMcpEndpoint,
-    allowed_skills: list[str],
     timeout: float = DEFAULT_MCP_SESSION_TIMEOUT,
 ) -> McpToolset:
     connection_params = _build_connection_params(endpoint, timeout=timeout)
-    return McpToolset(
-        connection_params=connection_params,
-        tool_filter=allowed_skills,
-    )
+    return McpToolset(connection_params=connection_params)
 
 
 def build_executor_mcp_toolsets(
     endpoints: list[ResolvedMcpEndpoint],
-    allowed_skills: list[str],
     timeout: float = DEFAULT_MCP_SESSION_TIMEOUT,
 ) -> list[McpToolset]:
     return [
-        build_executor_mcp_toolset(endpoint, allowed_skills, timeout=timeout)
+        build_executor_mcp_toolset(endpoint, timeout=timeout)
         for endpoint in endpoints
     ]
 
