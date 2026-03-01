@@ -14,6 +14,7 @@ COORDINATOR_INSTRUCTION = (
     "For first-turn requests, planner delegation must happen before any executor delegation. "
     "For subsequent turns, decide whether replanning is needed based on executor outcomes. "
     "Delegate planning to planner_subagent_a and execution to executor_subagent_b. "
+    "When user asks to send or read third-party communications (Slack/email), delegate only to communicator_subagent_d after execution output is ready. "
     "Use memory_subagent_c for memory lifecycle: retrieve relevant durable memory before planning when useful, "
     "and after execution decide whether to persist durable memory before final response. "
     "Persist memory when output contains reusable user preferences, stable business facts, recurring reporting choices, "
@@ -23,7 +24,8 @@ COORDINATOR_INSTRUCTION = (
     "If memory influenced the answer, explicitly state that memory was used, include the memory timestamp(s), and summarize the applied values. "
     "If the user says not to use memory, do not use memory and clearly acknowledge that memory was intentionally skipped. "
     "Executor may be called multiple times across plan steps. "
-    "Executor must never spawn subagents. Synthesize final user response only after execution is complete."    
+    "Executor must never spawn subagents. Communicator must never be called by planner, executor, or memory agents. "
+    "Synthesize final user response only after execution/communication is complete."
     f"\n{COMMON_INSTRUCTION}"
 )
 
@@ -62,6 +64,16 @@ MEMORY_INSTRUCTION = (
     "query_hints must include likely future search phrases the planner may use. "
     "When returning retrieved memory, include created_at timestamps and a concise freshness note. "
     "Always include clear semantic keys and return a short summary of what was saved or why it was skipped. "
+    "Do not spawn subagents."
+    f"\n{COMMON_INSTRUCTION}"
+)
+
+COMMUNICATOR_INSTRUCTION = (
+    "You are the communication specialist. Receive finalized content from orchestrator and execute third-party communication actions. "
+    "Use send_slack_message for posting to Slack (optionally with files), read_slack_messages for reading Slack conversations, "
+    "and send_email_smtp for SMTP email delivery. "
+    "Always transform orchestrator content into tool-ready payloads: Slack text/blocks and email plain-text/HTML. "
+    "Return only delivery/read status, destination metadata, and concise error reasons when failures occur. "
     "Do not spawn subagents."
     f"\n{COMMON_INSTRUCTION}"
 )

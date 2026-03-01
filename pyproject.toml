@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "agent-core"
 version = "0.1.0"
@@ -12,7 +16,8 @@ dependencies = [
   "pydantic-settings>=2.7.0",
   "opensearch-py>=2.8.0",
   "redis>=5.2.0",
-  "httpx>=0.28.0"  
+  "httpx>=0.28.0",
+  "slack-sdk>=3.35.0"
 ]
 
 [dependency-groups]
@@ -33,6 +38,13 @@ select = ["E", "F", "I", "UP", "B"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["agent_core*"]
 
 [tool.mypy]
 python_version = "3.11"

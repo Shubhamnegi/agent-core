@@ -16,9 +16,12 @@ def _extract_event_text(event: Any) -> str:
     parts = getattr(content, "parts", None)
     if not parts:
         return ""
-    first_part = parts[0]
-    text = getattr(first_part, "text", None)
-    return text if isinstance(text, str) else ""
+    texts: list[str] = []
+    for part in parts:
+        text = getattr(part, "text", None)
+        if isinstance(text, str) and text:
+            texts.append(text)
+    return "\n".join(texts)
 
 
 def _extract_event_function_calls(event: Any) -> list[dict[str, Any]]:

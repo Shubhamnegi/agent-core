@@ -22,6 +22,7 @@ def _resolve_agent_models(
         "planner": default_model_name,
         "executor": default_model_name,
         "memory": default_model_name,
+        "communicator": default_model_name,
     }
     for role, model_name in _load_agent_model_overrides(config_path).items():
         resolved[role] = model_name
@@ -47,7 +48,7 @@ def _load_agent_model_overrides(config_path: str | None) -> dict[str, str]:
         return {}
 
     output: dict[str, str] = {}
-    for role in ("coordinator", "planner", "executor", "memory"):
+    for role in ("coordinator", "planner", "executor", "memory", "communicator"):
         value = raw.get(role)
         if isinstance(value, str) and value.strip():
             output[role] = value.strip()

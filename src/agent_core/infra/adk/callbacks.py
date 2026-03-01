@@ -321,6 +321,22 @@ async def before_tool_callback(
         destination = args.get("agent_name") if isinstance(args, dict) else None
         trace_context = _trace_context.get()
         if trace_context is not None and isinstance(destination, str):
+            if destination == "communicator_subagent_d" and agent_name != "orchestrator_manager":
+                logger.warning(
+                    "transfer_blocked_communicator_orchestrator_only",
+                    extra={
+                        "tool_name": tool.name,
+                        "tool_args": args,
+                        "agent": agent_name,
+                        "reason": "communicator_transfer_allowed_only_from_orchestrator",
+                    },
+                )
+                return {
+                    "status": "blocked",
+                    "reason": "communicator_transfer_allowed_only_from_orchestrator",
+                    "required_agent": "orchestrator_manager",
+                }
+
             if destination == "memory_subagent_c" and not trace_context.allow_memory_usage:
                 logger.info(
                     "transfer_blocked_memory_disabled",

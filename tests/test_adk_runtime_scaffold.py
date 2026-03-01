@@ -8,7 +8,11 @@ from google.adk.agents import LlmAgent, LoopAgent, SequentialAgent
 from google.adk.tools.mcp_tool import McpToolset
 
 from agent_core.domain.models import AgentRunRequest
-from agent_core.infra.adk.agents import build_executor_agent, build_planner_agent
+from agent_core.infra.adk.agents import (
+    build_communicator_agent,
+    build_executor_agent,
+    build_planner_agent,
+)
 from agent_core.infra.adk.callbacks import (
     after_model_callback,
     after_tool_callback,
@@ -20,13 +24,20 @@ from agent_core.infra.adk.callbacks import (
 )
 from agent_core.infra.adk.runtime import AdkRuntimeScaffold
 from agent_core.infra.adk.runtime import (
+    _EXECUTION_NO_FINAL_TEXT_RESPONSE,
     _load_agent_model_overrides,
     _message_disables_memory_usage,
     _message_requests_memory_lookup,
     _resolve_agent_models,
+    _select_user_response_text,
     _sanitize_user_response,
 )
-from agent_core.prompts import COORDINATOR_INSTRUCTION, MEMORY_INSTRUCTION, PLANNER_INSTRUCTION
+from agent_core.prompts import (
+    COMMUNICATOR_INSTRUCTION,
+    COORDINATOR_INSTRUCTION,
+    MEMORY_INSTRUCTION,
+    PLANNER_INSTRUCTION,
+)
 
 
 def test_adk_runtime_uses_llm_coordinator_with_planner_executor_subagents() -> None:
@@ -45,7 +56,12 @@ def test_adk_runtime_uses_llm_coordinator_with_planner_executor_subagents() -> N
     assert isinstance(coordinator, LlmAgent)
 
     subagent_names = [agent.name for agent in coordinator.sub_agents]
-    assert subagent_names == ["memory_subagent_c", "planner_subagent_a", "executor_subagent_b"]
+    assert subagent_names == [
+        "memory_subagent_c",
+        "planner_subagent_a",
+        "executor_subagent_b",
+        "communicator_subagent_d",
+    ]
 
 
 def test_resolve_agent_models_uses_default_when_config_missing(tmp_path: Path) -> None:
@@ -61,6 +77,7 @@ def test_resolve_agent_models_uses_default_when_config_missing(tmp_path: Path) -
         "planner": "models/gemini-flash-lite-latest",
         "executor": "models/gemini-flash-lite-latest",
         "memory": "models/gemini-flash-lite-latest",
+        "communicator": "models/gemini-flash-lite-latest",
     }
 
 
@@ -73,6 +90,7 @@ def test_load_agent_model_overrides_reads_supported_roles_only(tmp_path: Path) -
                 "planner": "gemini-2.5-flash",
                 "executor": "gemini-2.5-flash-lite",
                 "memory": "gemini-2.5-flash",
+                "communicator": "gemini-2.5-flash-lite",
                 "unknown": "ignored-model",
                 "planner_blank": "   ",
             }
@@ -87,6 +105,7 @@ def test_load_agent_model_overrides_reads_supported_roles_only(tmp_path: Path) -
         "planner": "gemini-2.5-flash",
         "executor": "gemini-2.5-flash-lite",
         "memory": "gemini-2.5-flash",
+        "communicator": "gemini-2.5-flash-lite",
     }
 
 
@@ -99,6 +118,7 @@ def test_adk_runtime_applies_role_specific_models_from_config(tmp_path: Path) ->
                 "planner": "models/gemini-2.5-pro",
                 "executor": "models/gemini-2.5-flash-lite",
                 "memory": "models/gemini-2.5-flash",
+                "communicator": "models/gemini-2.5-flash-lite",
             }
         ),
         encoding="utf-8",
@@ -116,10 +136,33 @@ def test_adk_runtime_applies_role_specific_models_from_config(tmp_path: Path) ->
         "planner": "models/gemini-2.5-pro",
         "executor": "models/gemini-2.5-flash-lite",
         "memory": "models/gemini-2.5-flash",
+        "communicator": "models/gemini-2.5-flash-lite",
     }
 
 
+def test_select_user_response_text_prefers_orchestrator_final_text() -> None:
+    text_events = [
+        ("planner_subagent_a", True, "- **Plan:** do work"),
+        ("orchestrator_manager", True, "Final user answer"),
+    ]
+
+    selected = _select_user_response_text(text_events, non_planner_activity_seen=True)
+
+    assert selected == "Final user answer"
+
+
+def test_select_user_response_text_avoids_planner_text_after_execution() -> None:
+    text_events = [
+        ("planner_subagent_a", True, "- **Plan:** step 1 / step 2"),
+    ]
+
+    selected = _select_user_response_text(text_events, non_planner_activity_seen=True)
+
+    assert selected == _EXECUTION_NO_FINAL_TEXT_RESPONSE
+
+
 def test_prompt_contract_routes_memory_via_coordinator_and_planner() -> None:
+    assert "communicator_subagent_d" in COORDINATOR_INSTRUCTION
     assert "memory_subagent_c" in COORDINATOR_INSTRUCTION
     assert "persist durable memory" in COORDINATOR_INSTRUCTION
     assert "search_relevant_memory" in PLANNER_INSTRUCTION
@@ -131,6 +174,9 @@ def test_prompt_contract_routes_memory_via_coordinator_and_planner() -> None:
     assert "intent" in MEMORY_INSTRUCTION
     assert "entities" in MEMORY_INSTRUCTION
     assert "query_hints" in MEMORY_INSTRUCTION
+    assert "send_slack_message" in COMMUNICATOR_INSTRUCTION
+    assert "read_slack_messages" in COMMUNICATOR_INSTRUCTION
+    assert "send_email_smtp" in COMMUNICATOR_INSTRUCTION
 
 
 def _write_mcp_config(path: Path) -> None:
@@ -211,6 +257,17 @@ def test_adk_subagents_always_include_infra_tool_suite() -> None:
 
     assert expected.issubset(planner_tools)
     assert expected.issubset(executor_tools)
+
+
+def test_communicator_agent_exposes_communication_tools_only() -> None:
+    communicator = build_communicator_agent()
+    communicator_tools = {getattr(tool, "__name__", "") for tool in communicator.tools}
+
+    assert communicator_tools == {
+        "send_slack_message",
+        "read_slack_messages",
+        "send_email_smtp",
+    }
 
 
 def test_adk_runtime_uses_env_fallback_key_when_request_header_missing(
@@ -404,6 +461,40 @@ async def test_adk_runtime_mirrors_event_stream_with_lineage_fields() -> None:
 
 
 @pytest.mark.asyncio
+async def test_adk_runtime_mirror_concatenates_multi_part_text() -> None:
+    fake_event_repo = _FakeEventRepository()
+    runtime = AdkRuntimeScaffold(
+        app_name="test-app",
+        max_replans=3,
+        event_repo=fake_event_repo,  # type: ignore[arg-type]
+    )
+    request = AgentRunRequest(
+        tenant_id="tenant_1",
+        user_id="user_1",
+        session_id="session_1",
+        message="hello",
+    )
+    adk_event = SimpleNamespace(
+        id="evt_2",
+        author="orchestrator_manager",
+        invocation_id="task_456",
+        is_final_response=True,
+        content=SimpleNamespace(
+            parts=[
+                SimpleNamespace(text="line_one"),
+                SimpleNamespace(text="line_two"),
+            ]
+        ),
+    )
+
+    await runtime._mirror_adk_event(request=request, plan_id="plan_adk_456", event=adk_event)
+
+    assert len(fake_event_repo.events) == 1
+    mirrored = fake_event_repo.events[0]
+    assert mirrored["payload"]["text_preview"] == "line_one\nline_two"
+
+
+@pytest.mark.asyncio
 async def test_before_tool_callback_logs_tool_args_without_logrecord_collision(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -573,6 +664,50 @@ async def test_before_tool_callback_blocks_memory_when_user_disabled_it() -> Non
     assert blocked is not None
     assert blocked["status"] == "blocked"
     assert blocked["reason"] == "memory_usage_disabled_by_user"
+
+
+@pytest.mark.asyncio
+async def test_before_tool_callback_blocks_communicator_transfer_from_non_orchestrator() -> None:
+    token = bind_trace_context(
+        event_repo=_FakeEventRepository(),  # type: ignore[arg-type]
+        tenant_id="tenant_1",
+        session_id="session_1",
+        plan_id="plan_adk_trace_communicator_1",
+        require_planner_first_transfer=False,
+    )
+    try:
+        blocked = await before_tool_callback(
+            tool=SimpleNamespace(name="transfer_to_agent"),
+            args={"agent_name": "communicator_subagent_d"},
+            tool_context=SimpleNamespace(agent_name="planner_subagent_a"),
+        )
+    finally:
+        reset_trace_context(token)
+
+    assert blocked is not None
+    assert blocked["status"] == "blocked"
+    assert blocked["reason"] == "communicator_transfer_allowed_only_from_orchestrator"
+
+
+@pytest.mark.asyncio
+async def test_before_tool_callback_allows_communicator_transfer_from_orchestrator() -> None:
+    token = bind_trace_context(
+        event_repo=_FakeEventRepository(),  # type: ignore[arg-type]
+        tenant_id="tenant_1",
+        session_id="session_1",
+        plan_id="plan_adk_trace_communicator_2",
+        require_planner_first_transfer=False,
+    )
+    try:
+        allowed = await before_tool_callback(
+            tool=SimpleNamespace(name="transfer_to_agent"),
+            args={"agent_name": "communicator_subagent_d"},
+            tool_context=SimpleNamespace(agent_name="orchestrator_manager"),
+        )
+    finally:
+        reset_trace_context(token)
+
+    assert allowed is None
 
 
 def test_runtime_memory_intent_and_opt_out_detection_helpers() -> None:

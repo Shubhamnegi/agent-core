@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     skill_service_url: str = "http://localhost:8081"
     skill_service_key: str | None = None
+    communication_config_path: str | None = "config/communication_config.json"
     mcp_config_path: str | None = "config/mcp_config.json"
     mcp_session_timeout: float = 60.0
 

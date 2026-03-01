@@ -21,6 +21,7 @@ from google.genai import types
 from agent_core.application.ports import EventRepository, MemoryRepository
 from agent_core.domain.models import AgentRunRequest, AgentRunResponse, EventRecord
 from agent_core.infra.adk.agents import (
+    build_communicator_agent,
     build_coordinator_agent,
     build_executor_agent,
     build_memory_agent,
@@ -71,6 +72,43 @@ from agent_core.infra.adk.runtime_session import (
 
 logger = logging.getLogger(__name__)
 
+_NO_OUTPUT_RESPONSE = "adk_scaffold_response: no output"
+_EXECUTION_NO_FINAL_TEXT_RESPONSE = (
+    "adk_scaffold_response: execution completed without final user-facing text"
+)
+
+
+def _select_user_response_text(
+    text_events: list[tuple[str | None, bool, str]],
+    non_planner_activity_seen: bool,
+) -> str:
+    """Select the safest final response candidate from streamed ADK events.
+
+    Why: planner output is intermediate and must not be returned as final user answer when
+    downstream execution has already happened.
+    """
+    if not text_events:
+        return _NO_OUTPUT_RESPONSE
+
+    preferred_final_authors = {"orchestrator_manager", "communicator_subagent_d"}
+
+    for author, is_final, text in reversed(text_events):
+        if is_final and author in preferred_final_authors:
+            return text
+
+    for author, is_final, text in reversed(text_events):
+        if is_final and author != "planner_subagent_a":
+            return text
+
+    for author, _, text in reversed(text_events):
+        if author != "planner_subagent_a":
+            return text
+
+    if non_planner_activity_seen:
+        return _EXECUTION_NO_FINAL_TEXT_RESPONSE
+
+    return text_events[-1][2]
+
 
 class AdkRuntimeScaffold:
     """Runtime coordinator for the ADK scaffold.
@@ -84,6 +122,7 @@ class AdkRuntimeScaffold:
         app_name: str = "agent-core",
         max_replans: int = 3,
         model_name: str = "models/gemini-flash-lite-latest",
+        communication_config_path: str | None = "config/communication_config.json",
         mcp_config_path: str | None = None,
         skill_service_url: str | None = None,
         skill_service_key: str | None = None,
@@ -96,6 +135,7 @@ class AdkRuntimeScaffold:
         self.app_name = app_name
         self.max_replans = max_replans
         self.model_name = model_name
+        self.communication_config_path = communication_config_path
         self.mcp_config_path = mcp_config_path
         self.skill_service_url = skill_service_url
         self.skill_service_key = skill_service_key
@@ -172,10 +212,14 @@ class AdkRuntimeScaffold:
             mcp_toolsets=self.executor_mcp_toolsets,
             model_name=self.agent_models["executor"],
         )
+        self.communicator_agent = build_communicator_agent(
+            model_name=self.agent_models["communicator"],
+        )
         self.coordinator_agent = build_coordinator_agent(
             memory=self.memory_agent,
             planner=self.planner_agent,
             executor=self.executor_agent,
+            communicator=self.communicator_agent,
             model_name=self.agent_models["coordinator"],
         )
         self.replan_loop_agent = LoopAgent(
@@ -211,6 +255,7 @@ class AdkRuntimeScaffold:
             plan_id=plan_id,
             memory_repo=self.memory_repo,
             embedding_service=self.embedding_service,
+            communication_config_path=self.communication_config_path,
         )
         if self.event_repo is not None:
             trace_token = bind_trace_context(
@@ -233,21 +278,29 @@ class AdkRuntimeScaffold:
             new_message=types.Content(role="user", parts=[types.Part(text=request.message)]),
         )
 
-        # Why: capture all model text chunks; final user response is chosen from the last text event.
-        texts: list[str] = []
+        # Why: capture rich event context to choose a safe final user-facing response.
+        text_events: list[tuple[str | None, bool, str]] = []
+        non_planner_activity_seen = False
         memory_metadata = _MemoryUsageMetadata()
         try:
             async for event in events:
+                author = _to_optional_str(getattr(event, "author", None))
+                is_final = bool(getattr(event, "is_final_response", False))
                 text = _extract_event_text(event)
                 if text:
-                    texts.append(text)
+                    text_events.append((author, is_final, text))
+                if author is not None and author != "planner_subagent_a":
+                    non_planner_activity_seen = True
                 memory_metadata = _merge_memory_metadata(
                     memory_metadata,
                     _extract_memory_usage_metadata(_extract_event_function_responses(event)),
                 )
                 await self._mirror_adk_event(request=request, plan_id=plan_id, event=event)
 
-            response = texts[-1] if texts else "adk_scaffold_response: no output"
+            response = _select_user_response_text(
+                text_events=text_events,
+                non_planner_activity_seen=non_planner_activity_seen,
+            )
             response = _sanitize_user_response(response)
             response = _apply_memory_disclosure(
                 response=response,

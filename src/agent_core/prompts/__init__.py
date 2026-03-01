@@ -1,4 +1,5 @@
 from agent_core.prompts.adk_prompts import (
+    COMMUNICATOR_INSTRUCTION,
     COORDINATOR_INSTRUCTION,
     EXECUTOR_INSTRUCTION,
     EXECUTOR_SCAFFOLD_PREFIX,
@@ -8,6 +9,7 @@ from agent_core.prompts.adk_prompts import (
 )
 
 __all__ = [
+    "COMMUNICATOR_INSTRUCTION",
     "COORDINATOR_INSTRUCTION",
     "PLANNER_INSTRUCTION",
     "EXECUTOR_INSTRUCTION",

@@ -23,13 +23,17 @@ from agent_core.infra.adk.tools import (
     exec_python,
     read_lines,
     read_memory,
+    read_slack_messages,
     save_action_memory,
+    send_email_smtp,
+    send_slack_message,
     save_user_memory,
     search_relevant_memory,
     write_memory,
     write_temp,
 )
 from agent_core.prompts import (
+    COMMUNICATOR_INSTRUCTION,
     COORDINATOR_INSTRUCTION,
     EXECUTOR_INSTRUCTION,
     EXECUTOR_SCAFFOLD_PREFIX,
@@ -77,18 +81,19 @@ def build_coordinator_agent(
     memory: BaseAgent,
     planner: BaseAgent,
     executor: BaseAgent,
+    communicator: BaseAgent,
     model_name: str = "models/gemini-flash-lite-latest",
 ) -> LlmAgent:
     """Build orchestrator manager.
 
-    Why: central coordinator enforces explicit delegation order across memory/planner/executor.
+    Why: central coordinator enforces explicit delegation order across specialist subagents.
     """
     return LlmAgent(
         name="orchestrator_manager",
         description="Manager role scaffold",
         model=model_name,
         instruction=COORDINATOR_INSTRUCTION,
-        sub_agents=[memory, planner, executor],
+        sub_agents=[memory, planner, executor, communicator],
         before_model_callback=before_model_callback,
         after_model_callback=after_model_callback,
         before_tool_callback=before_tool_callback,
@@ -160,6 +165,27 @@ def build_executor_agent(
         model=model_name,
         instruction=EXECUTOR_INSTRUCTION,
         tools=tools,
+        before_model_callback=before_model_callback,
+        after_model_callback=after_model_callback,
+        before_tool_callback=before_tool_callback,
+        after_tool_callback=after_tool_callback,
+        on_tool_error_callback=on_tool_error_callback,
+    )
+
+
+def build_communicator_agent(
+    model_name: str = "models/gemini-flash-lite-latest",
+) -> LlmAgent:
+    """Build communicator specialist agent.
+
+    Why: isolate third-party communication operations (Slack/email) behind one role.
+    """
+    return LlmAgent(
+        name="communicator_subagent_d",
+        description="Communication role scaffold",
+        model=model_name,
+        instruction=COMMUNICATOR_INSTRUCTION,
+        tools=[send_slack_message, read_slack_messages, send_email_smtp],
         before_model_callback=before_model_callback,
         after_model_callback=after_model_callback,
         before_tool_callback=before_tool_callback,

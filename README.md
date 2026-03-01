@@ -88,6 +88,16 @@ Services started:
 Gemini runtime env:
 - `AGENT_MODEL_NAME` (default: `models/gemini-flash-lite-latest`)
 - `AGENT_MODELS_CONFIG_PATH` (default: `config/agent_models.json`)
-    - Optional per-role overrides using keys: `coordinator`, `planner`, `executor`, `memory`
+    - Optional per-role overrides using keys: `coordinator`, `planner`, `executor`, `memory`, `communicator`
     - Example: set executor to `gemini-2.5-flash-lite` while planner/coordinator stay on stronger models
 - `GOOGLE_API_KEY`
+
+## Communication subagent configuration
+
+- Config file path: `AGENT_COMMUNICATION_CONFIG_PATH` (default: `config/communication_config.json`)
+- Slack token source: `slack.bot_token_env` in config (default env key: `SLACK_BOT_TOKEN`)
+- SMTP password source: `smtp.password_env` in config (default env key: `SMTP_PASSWORD`)
+- Orchestrator can delegate communication tasks to `communicator_subagent_d` for:
+    - `send_slack_message` (text/blocks + optional file)
+    - `read_slack_messages` (message stream + attached file metadata)
+    - `send_email_smtp` (preconfigured SMTP email, with optional attachments)
