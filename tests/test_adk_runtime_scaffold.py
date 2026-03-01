@@ -25,6 +25,8 @@ from agent_core.infra.adk.callbacks import (
 from agent_core.infra.adk.runtime import AdkRuntimeScaffold
 from agent_core.infra.adk.runtime import (
     _EXECUTION_NO_FINAL_TEXT_RESPONSE,
+    _EXECUTION_TOOL_FAILURE_RESPONSE,
+    _has_tool_failure,
     _load_agent_model_overrides,
     _message_disables_memory_usage,
     _message_requests_memory_lookup,
@@ -146,7 +148,11 @@ def test_select_user_response_text_prefers_orchestrator_final_text() -> None:
         ("orchestrator_manager", True, "Final user answer"),
     ]
 
-    selected = _select_user_response_text(text_events, non_planner_activity_seen=True)
+    selected = _select_user_response_text(
+        text_events,
+        non_planner_activity_seen=True,
+        tool_failure_seen=False,
+    )
 
     assert selected == "Final user answer"
 
@@ -156,9 +162,53 @@ def test_select_user_response_text_avoids_planner_text_after_execution() -> None
         ("planner_subagent_a", True, "- **Plan:** step 1 / step 2"),
     ]
 
-    selected = _select_user_response_text(text_events, non_planner_activity_seen=True)
+    selected = _select_user_response_text(
+        text_events,
+        non_planner_activity_seen=True,
+        tool_failure_seen=False,
+    )
 
     assert selected == _EXECUTION_NO_FINAL_TEXT_RESPONSE
+
+
+def test_select_user_response_text_rejects_communicator_intermediate_final() -> None:
+    text_events = [
+        ("communicator_subagent_d", True, "Sent to Slack successfully."),
+    ]
+
+    selected = _select_user_response_text(
+        text_events,
+        non_planner_activity_seen=True,
+        tool_failure_seen=False,
+    )
+
+    assert selected == _EXECUTION_NO_FINAL_TEXT_RESPONSE
+
+
+def test_select_user_response_text_reports_tool_failure_without_orchestrator_final() -> None:
+    text_events = [
+        ("executor_subagent_b", True, "executor partial output"),
+    ]
+
+    selected = _select_user_response_text(
+        text_events,
+        non_planner_activity_seen=True,
+        tool_failure_seen=True,
+    )
+
+    assert selected == _EXECUTION_TOOL_FAILURE_RESPONSE
+
+
+def test_has_tool_failure_detects_failed_statuses() -> None:
+    assert _has_tool_failure([
+        {"name": "get_cost_and_usage", "response": {"status": "failed", "reason": "x"}}
+    ]) is True
+    assert _has_tool_failure([
+        {"name": "transfer_to_agent", "response": {"status": "blocked"}}
+    ]) is True
+    assert _has_tool_failure([
+        {"name": "get_cost_and_usage", "response": {"status": "ok"}}
+    ]) is False
 
 
 def test_prompt_contract_routes_memory_via_coordinator_and_planner() -> None:

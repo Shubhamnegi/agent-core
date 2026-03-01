@@ -76,38 +76,47 @@ _NO_OUTPUT_RESPONSE = "adk_scaffold_response: no output"
 _EXECUTION_NO_FINAL_TEXT_RESPONSE = (
     "adk_scaffold_response: execution completed without final user-facing text"
 )
+_EXECUTION_TOOL_FAILURE_RESPONSE = (
+    "adk_scaffold_response: execution failed due to tool/runtime error before orchestrator final response"
+)
 
 
 def _select_user_response_text(
     text_events: list[tuple[str | None, bool, str]],
     non_planner_activity_seen: bool,
+    tool_failure_seen: bool,
 ) -> str:
-    """Select the safest final response candidate from streamed ADK events.
+    """Select final response with strict orchestrator ownership.
 
-    Why: planner output is intermediate and must not be returned as final user answer when
-    downstream execution has already happened.
+    Why: only orchestrator is allowed to produce final user-facing response; intermediate
+    text from memory/planner/executor/communicator must never be returned directly.
     """
     if not text_events:
         return _NO_OUTPUT_RESPONSE
 
-    preferred_final_authors = {"orchestrator_manager", "communicator_subagent_d"}
-
     for author, is_final, text in reversed(text_events):
-        if is_final and author in preferred_final_authors:
+        if is_final and author == "orchestrator_manager":
             return text
 
-    for author, is_final, text in reversed(text_events):
-        if is_final and author != "planner_subagent_a":
-            return text
-
-    for author, _, text in reversed(text_events):
-        if author != "planner_subagent_a":
-            return text
+    if tool_failure_seen:
+        return _EXECUTION_TOOL_FAILURE_RESPONSE
 
     if non_planner_activity_seen:
         return _EXECUTION_NO_FINAL_TEXT_RESPONSE
 
-    return text_events[-1][2]
+    return _EXECUTION_NO_FINAL_TEXT_RESPONSE
+
+
+def _has_tool_failure(function_responses: list[dict[str, Any]]) -> bool:
+    failure_statuses = {"failed", "error", "blocked", "contract_violation"}
+    for function_response in function_responses:
+        response_payload = function_response.get("response")
+        if not isinstance(response_payload, dict):
+            continue
+        status = response_payload.get("status")
+        if isinstance(status, str) and status.lower() in failure_statuses:
+            return True
+    return False
 
 
 class AdkRuntimeScaffold:
@@ -269,25 +278,30 @@ class AdkRuntimeScaffold:
         # Why: capture rich event context to choose a safe final user-facing response.
         text_events: list[tuple[str | None, bool, str]] = []
         non_planner_activity_seen = False
+        tool_failure_seen = False
         memory_metadata = _MemoryUsageMetadata()
         try:
             async for event in events:
                 author = _to_optional_str(getattr(event, "author", None))
                 is_final = bool(getattr(event, "is_final_response", False))
                 text = _extract_event_text(event)
+                function_responses = _extract_event_function_responses(event)
                 if text:
                     text_events.append((author, is_final, text))
                 if author is not None and author != "planner_subagent_a":
                     non_planner_activity_seen = True
+                if _has_tool_failure(function_responses):
+                    tool_failure_seen = True
                 memory_metadata = _merge_memory_metadata(
                     memory_metadata,
-                    _extract_memory_usage_metadata(_extract_event_function_responses(event)),
+                    _extract_memory_usage_metadata(function_responses),
                 )
                 await self._mirror_adk_event(request=request, plan_id=plan_id, event=event)
 
             response = _select_user_response_text(
                 text_events=text_events,
                 non_planner_activity_seen=non_planner_activity_seen,
+                tool_failure_seen=tool_failure_seen,
             )
             response = _sanitize_user_response(response)
             response = _apply_memory_disclosure(
