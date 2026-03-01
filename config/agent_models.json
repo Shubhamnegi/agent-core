@@ -1,0 +1,6 @@
+{
+  "coordinator": "gemini-2.5-flash",
+  "planner": "gemini-2.5-flash",
+  "executor": "gemini-2.5-flash",
+  "memory": "gemini-2.5-flash"
+}

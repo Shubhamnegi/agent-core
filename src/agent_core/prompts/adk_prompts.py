@@ -38,6 +38,7 @@ PLANNER_INSTRUCTION = (
     "tool-first plan and clearly state no_skills_found=true. "
     "Create detailed, stepwise execution guidance for the orchestrator, including skill/tool hints per step. "
     "Never spawn subagents."
+    "If executor says replanning is required due to missing tools, replan with available tools and include a clear note about why the replan was needed. "
     f"\n{COMMON_INSTRUCTION}"
 )
 
@@ -45,6 +46,7 @@ EXECUTOR_INSTRUCTION = (
     "You are the execution worker. Follow orchestrator instruction precisely, use MCP/tools as needed, "
     "and return actionable execution outcome to orchestrator. "
     "Do not spawn subagents."
+    "If tools are missing as per the planner then ask the orchestrator manager to replan with available tools."
     f"\n{COMMON_INSTRUCTION}"
 )
 

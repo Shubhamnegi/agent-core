@@ -96,6 +96,7 @@ class Container:
             app_name=settings.app_name,
             max_replans=settings.max_replans,
             model_name=settings.model_name,
+            agent_models_config_path=settings.models_config_path,
             mcp_config_path=settings.mcp_config_path,
             skill_service_url=settings.skill_service_url,
             skill_service_key=settings.skill_service_key,

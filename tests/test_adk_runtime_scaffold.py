@@ -20,8 +20,10 @@ from agent_core.infra.adk.callbacks import (
 )
 from agent_core.infra.adk.runtime import AdkRuntimeScaffold
 from agent_core.infra.adk.runtime import (
+    _load_agent_model_overrides,
     _message_disables_memory_usage,
     _message_requests_memory_lookup,
+    _resolve_agent_models,
     _sanitize_user_response,
 )
 from agent_core.prompts import COORDINATOR_INSTRUCTION, MEMORY_INSTRUCTION, PLANNER_INSTRUCTION
@@ -44,6 +46,77 @@ def test_adk_runtime_uses_llm_coordinator_with_planner_executor_subagents() -> N
 
     subagent_names = [agent.name for agent in coordinator.sub_agents]
     assert subagent_names == ["memory_subagent_c", "planner_subagent_a", "executor_subagent_b"]
+
+
+def test_resolve_agent_models_uses_default_when_config_missing(tmp_path: Path) -> None:
+    missing_path = tmp_path / "missing_models.json"
+
+    resolved = _resolve_agent_models(
+        default_model_name="models/gemini-flash-lite-latest",
+        config_path=missing_path.as_posix(),
+    )
+
+    assert resolved == {
+        "coordinator": "models/gemini-flash-lite-latest",
+        "planner": "models/gemini-flash-lite-latest",
+        "executor": "models/gemini-flash-lite-latest",
+        "memory": "models/gemini-flash-lite-latest",
+    }
+
+
+def test_load_agent_model_overrides_reads_supported_roles_only(tmp_path: Path) -> None:
+    config_path = tmp_path / "agent_models.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "coordinator": "gemini-2.5-pro",
+                "planner": "gemini-2.5-flash",
+                "executor": "gemini-2.5-flash-lite",
+                "memory": "gemini-2.5-flash",
+                "unknown": "ignored-model",
+                "planner_blank": "   ",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    overrides = _load_agent_model_overrides(config_path.as_posix())
+
+    assert overrides == {
+        "coordinator": "gemini-2.5-pro",
+        "planner": "gemini-2.5-flash",
+        "executor": "gemini-2.5-flash-lite",
+        "memory": "gemini-2.5-flash",
+    }
+
+
+def test_adk_runtime_applies_role_specific_models_from_config(tmp_path: Path) -> None:
+    config_path = tmp_path / "agent_models.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "coordinator": "models/gemini-2.5-pro",
+                "planner": "models/gemini-2.5-pro",
+                "executor": "models/gemini-2.5-flash-lite",
+                "memory": "models/gemini-2.5-flash",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    runtime = AdkRuntimeScaffold(
+        app_name="test-app",
+        max_replans=3,
+        model_name="models/gemini-flash-latest",
+        agent_models_config_path=config_path.as_posix(),
+    )
+
+    assert runtime.agent_models == {
+        "coordinator": "models/gemini-2.5-pro",
+        "planner": "models/gemini-2.5-pro",
+        "executor": "models/gemini-2.5-flash-lite",
+        "memory": "models/gemini-2.5-flash",
+    }
 
 
 def test_prompt_contract_routes_memory_via_coordinator_and_planner() -> None:

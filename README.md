@@ -87,4 +87,7 @@ Services started:
 
 Gemini runtime env:
 - `AGENT_MODEL_NAME` (default: `models/gemini-flash-lite-latest`)
+- `AGENT_MODELS_CONFIG_PATH` (default: `config/agent_models.json`)
+    - Optional per-role overrides using keys: `coordinator`, `planner`, `executor`, `memory`
+    - Example: set executor to `gemini-2.5-flash-lite` while planner/coordinator stay on stronger models
 - `GOOGLE_API_KEY`

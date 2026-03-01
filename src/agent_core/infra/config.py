@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     opensearch_events_retention_days: int = 30
     embedding_model_name: str = "models/text-embedding-004"
     embedding_output_dimensionality: int | None = None
+    models_config_path: str | None = "config/agent_models.json"
     redis_url: str = "redis://localhost:6379/0"
     skill_service_url: str = "http://localhost:8081"
     skill_service_key: str | None = None

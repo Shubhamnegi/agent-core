@@ -3,7 +3,9 @@ from __future__ import annotations
 import logging
 import os
 import re
+import json
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -46,6 +48,7 @@ class AdkRuntimeScaffold:
         mcp_config_path: str | None = None,
         skill_service_url: str | None = None,
         skill_service_key: str | None = None,
+        agent_models_config_path: str | None = None,
         event_repo: EventRepository | None = None,
         memory_repo: MemoryRepository | None = None,
         embedding_service: EmbeddingService | None = None,
@@ -57,10 +60,16 @@ class AdkRuntimeScaffold:
         self.mcp_config_path = mcp_config_path
         self.skill_service_url = skill_service_url
         self.skill_service_key = skill_service_key
+        self.agent_models_config_path = agent_models_config_path
         self.event_repo = event_repo
         self.memory_repo = memory_repo
         self.embedding_service = embedding_service
         self.mcp_session_timeout = mcp_session_timeout
+        self.default_model_name = model_name
+        self.agent_models = _resolve_agent_models(
+            default_model_name=model_name,
+            config_path=agent_models_config_path,
+        )
         self.executor_allowed_skills: list[str] = []
         self.planner_mcp_toolset: McpToolset | None = None
         self.executor_mcp_toolsets: list[McpToolset] = []
@@ -111,23 +120,24 @@ class AdkRuntimeScaffold:
             extra={
                 "planner_toolset_enabled": self.planner_mcp_toolset is not None,
                 "executor_toolset_count": len(self.executor_mcp_toolsets),
+                "agent_models": self.agent_models,
             },
         )
 
-        self.memory_agent = build_memory_agent(model_name=self.model_name)
+        self.memory_agent = build_memory_agent(model_name=self.agent_models["memory"])
         self.planner_agent = build_planner_agent(
             mcp_toolset=self.planner_mcp_toolset,
-            model_name=self.model_name,
+            model_name=self.agent_models["planner"],
         )
         self.executor_agent = build_executor_agent(
             mcp_toolsets=self.executor_mcp_toolsets,
-            model_name=self.model_name,
+            model_name=self.agent_models["executor"],
         )
         self.coordinator_agent = build_coordinator_agent(
             memory=self.memory_agent,
             planner=self.planner_agent,
             executor=self.executor_agent,
-            model_name=self.model_name,
+            model_name=self.agent_models["coordinator"],
         )
         self.replan_loop_agent = LoopAgent(
             name="agent_core_replan_loop",
@@ -668,6 +678,46 @@ def _load_mcp_config_or_fallback(
 
 def _normalize_headers(request_headers: dict[str, str]) -> dict[str, str]:
     return {key.lower(): value for key, value in request_headers.items()}
+
+
+def _resolve_agent_models(
+    default_model_name: str,
+    config_path: str | None,
+) -> dict[str, str]:
+    resolved = {
+        "coordinator": default_model_name,
+        "planner": default_model_name,
+        "executor": default_model_name,
+        "memory": default_model_name,
+    }
+    for role, model_name in _load_agent_model_overrides(config_path).items():
+        resolved[role] = model_name
+    return resolved
+
+
+def _load_agent_model_overrides(config_path: str | None) -> dict[str, str]:
+    if not config_path:
+        return {}
+    path = Path(config_path)
+    if not path.exists():
+        logger.warning("agent_models_config_missing", extra={"path": config_path})
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        logger.exception("agent_models_config_invalid_json", extra={"path": config_path})
+        return {}
+
+    if not isinstance(raw, dict):
+        logger.warning("agent_models_config_invalid_shape", extra={"path": config_path})
+        return {}
+
+    output: dict[str, str] = {}
+    for role in ("coordinator", "planner", "executor", "memory"):
+        value = raw.get(role)
+        if isinstance(value, str) and value.strip():
+            output[role] = value.strip()
+    return output
 
 
 def _endpoint_debug(endpoint: ResolvedMcpEndpoint | None) -> dict[str, Any] | None:
