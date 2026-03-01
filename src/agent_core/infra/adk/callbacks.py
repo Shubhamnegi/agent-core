@@ -1,4 +1,9 @@
 from __future__ import annotations
+"""ADK callback policies for tracing, guardrails, and tool-call governance.
+
+Why this module exists: callback behavior is policy-heavy and cross-cutting; centralizing it
+keeps agent/runtime builders simple while preserving one auditable control point.
+"""
 
 import json
 import logging
@@ -22,6 +27,12 @@ _TRACE_TEXT_LIMIT = 12000
 
 @dataclass(slots=True)
 class _TraceContext:
+    """Per-request trace and policy state.
+
+    Why: callbacks are invoked across many steps; this context tracks invariants that must
+    hold across the whole run (planner-before-executor, memory precheck, tool usage evidence).
+    """
+
     event_repo: EventRepository
     tenant_id: str
     session_id: str
@@ -54,6 +65,7 @@ def bind_trace_context(
     require_memory_precheck: bool = False,
     planner_expected_tools: list[str] | None = None,
 ) -> Token[_TraceContext | None]:
+    """Why: bind request-scoped policy state so callbacks can enforce cross-step contracts."""
     return _trace_context.set(
         _TraceContext(
             event_repo=event_repo,
@@ -69,6 +81,7 @@ def bind_trace_context(
 
 
 def reset_trace_context(token: Token[_TraceContext | None]) -> None:
+    """Why: avoid context leakage between concurrent/next requests."""
     _trace_context.reset(token)
 
 
@@ -123,6 +136,7 @@ async def _append_trace_event(
     callback_context: Any,
     payload: dict[str, Any],
 ) -> None:
+    """Why: persist callback-level telemetry so prompt/tool behavior can be audited later."""
     trace_context = _trace_context.get()
     if trace_context is None:
         return
@@ -144,7 +158,10 @@ async def before_model_callback(
     callback_context: Any,
     llm_request: LlmRequest,
 ) -> LlmResponse | None:
-    """Log the prompt sent to the LLM (system instruction + conversation)."""
+    """Log prompt details and planner tool availability.
+
+    Why: prompt+available-tools visibility is required to diagnose planning failures.
+    """
     agent_name = getattr(callback_context, "agent_name", "unknown")
     prompt_texts = _extract_content_texts(llm_request.contents)
     system_instruction: str | None = None
@@ -231,7 +248,10 @@ async def after_model_callback(
     callback_context: Any,
     llm_response: LlmResponse,
 ) -> LlmResponse | None:
-    """Log the LLM response — both textual parts and function calls."""
+    """Log model output and function-call intent.
+
+    Why: captures decision evidence when debugging tool routing and answer quality.
+    """
     agent_name = getattr(callback_context, "agent_name", "unknown")
     content = llm_response.content
     response_texts = _extract_content_texts([content]) if content else []
@@ -281,6 +301,10 @@ async def before_tool_callback(
     args: dict[str, Any],
     tool_context: Any,
 ) -> dict[str, Any] | None:
+    """Enforce tool-call guardrails before execution.
+
+    Why: this is the contract gate for memory usage policy and planner-first sequencing.
+    """
     agent_name = getattr(tool_context, "agent_name", "unknown")
     logger.info(
         "tool_call_start",
@@ -409,6 +433,10 @@ async def after_tool_callback(
     tool_response: Any = None,
     **_: Any,
 ) -> dict[str, Any] | None:
+    """Record tool completion and enrich structured dict results.
+
+    Why: adds lightweight observability while preserving downstream result handling.
+    """
     agent_name = getattr(tool_context, "agent_name", "unknown")
     effective_result = tool_response if tool_response is not None else result
     result_preview = str(effective_result)[:1000] if effective_result else ""
@@ -437,6 +465,7 @@ async def after_tool_callback(
 
 
 def _result_indicates_no_skills(result: Any) -> bool:
+    """Why: planner may legitimately skip load step when discovery returns no skills."""
     if result is None:
         return False
     try:
@@ -463,6 +492,10 @@ async def on_tool_error_callback(
     exc: Exception | None = None,
     **_: Any,
 ) -> dict[str, Any]:
+    """Return normalized tool failure payload.
+
+    Why: callers should receive consistent failure shape regardless of tool internals.
+    """
     effective_error = error or exc or RuntimeError("unknown_tool_error")
     logger.error(
         "tool_call_error",

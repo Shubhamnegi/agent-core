@@ -1,4 +1,9 @@
 from __future__ import annotations
+"""Agent construction and scaffold agents.
+
+Why this module exists: keep role wiring (coordinator/planner/executor/memory) in one place
+so runtime orchestration stays focused on lifecycle and execution flow.
+"""
 
 from collections.abc import AsyncGenerator
 from typing import Any
@@ -35,6 +40,11 @@ from agent_core.prompts import (
 
 
 class PlannerAgent(BaseAgent):
+    """Deterministic planner scaffold.
+
+    Why: provides a predictable fallback event shape during scaffold execution/tests.
+    """
+
     async def _run_async_impl(self, ctx: Any) -> AsyncGenerator[Event, None]:
         message = _extract_user_text(ctx)
         content = types.Content(
@@ -45,6 +55,11 @@ class PlannerAgent(BaseAgent):
 
 
 class ExecutorAgent(BaseAgent):
+    """Deterministic executor scaffold.
+
+    Why: mirrors planner scaffold behavior for stable non-LLM execution paths.
+    """
+
     async def _run_async_impl(self, ctx: Any) -> AsyncGenerator[Event, None]:
         message = _extract_user_text(ctx)
         content = types.Content(
@@ -64,6 +79,10 @@ def build_coordinator_agent(
     executor: BaseAgent,
     model_name: str = "models/gemini-flash-lite-latest",
 ) -> LlmAgent:
+    """Build orchestrator manager.
+
+    Why: central coordinator enforces explicit delegation order across memory/planner/executor.
+    """
     return LlmAgent(
         name="orchestrator_manager",
         description="Manager role scaffold",
@@ -81,6 +100,10 @@ def build_coordinator_agent(
 def build_memory_agent(
     model_name: str = "models/gemini-flash-lite-latest",
 ) -> LlmAgent:
+    """Build memory specialist agent.
+
+    Why: isolate durable-memory read/write responsibilities behind a dedicated subagent.
+    """
     return LlmAgent(
         name="memory_subagent_c",
         description="Memory intelligence scaffold",
@@ -99,6 +122,10 @@ def build_planner_agent(
     mcp_toolset: Any | None = None,
     model_name: str = "models/gemini-flash-lite-latest",
 ) -> LlmAgent:
+    """Build planner agent.
+
+    Why: planner always gets infra tools; MCP toolset is optional for environment-specific skills.
+    """
     tools: list[Any] = _infra_tools()
     if mcp_toolset is not None:
         tools.append(mcp_toolset)
@@ -120,6 +147,10 @@ def build_executor_agent(
     mcp_toolsets: list[Any] | None = None,
     model_name: str = "models/gemini-flash-lite-latest",
 ) -> LlmAgent:
+    """Build executor agent.
+
+    Why: executor combines stable infra tools with optional MCP toolsets for step execution.
+    """
     tools: list[Any] = _infra_tools()
     if mcp_toolsets is not None:
         tools.extend(mcp_toolsets)
@@ -138,6 +169,7 @@ def build_executor_agent(
 
 
 def _extract_user_text(ctx: Any) -> str:
+    """Why: normalize prompt extraction from ADK context for scaffold event generation."""
     user_content = getattr(ctx, "user_content", None)
     if user_content is None:
         return ""
@@ -148,6 +180,7 @@ def _extract_user_text(ctx: Any) -> str:
 
 
 def _infra_tools() -> list[Any]:
+    """Why: keep a single canonical infra tool bundle shared by planner/executor."""
     return [
         write_memory,
         read_memory,
