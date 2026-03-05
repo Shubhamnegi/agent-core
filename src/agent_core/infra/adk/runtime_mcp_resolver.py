@@ -15,7 +15,6 @@ def _default_skill_service_endpoint() -> dict[str, Any]:
     return {
         "name": "skill_service",
         "url_env": "AGENT_SKILL_SERVICE_URL",
-        "planner_tool_filter": ["find_relevant_skill", "load_instructions"],
         "auth_headers": [
             {
                 "name": "x-api-key",
@@ -55,24 +54,44 @@ def _get_endpoint_name(config: dict[str, Any]) -> str:
     return "skill_service"
 
 
+def _get_planner_endpoint_names(config: dict[str, Any]) -> list[str]:
+    names = config.get("planner_endpoints")
+    if isinstance(names, list):
+        selected = [value for value in names if isinstance(value, str) and value]
+        if selected:
+            return selected
+    return [_get_endpoint_name(config)]
+
+
+def _select_endpoint_configs(
+    mcp_config_path: str | None,
+    env_values: dict[str, str],
+) -> list[dict[str, Any]]:
+    if mcp_config_path:
+        config = load_mcp_config(mcp_config_path)
+        endpoint_names = _get_planner_endpoint_names(config)
+        resolved: list[dict[str, Any]] = []
+        for endpoint_name in endpoint_names:
+            endpoint = _find_endpoint_by_name(config, endpoint_name)
+            if endpoint is None:
+                msg = "mcp_endpoint_not_found"
+                raise ValueError(msg)
+            resolved.append(endpoint)
+        return resolved
+
+    fallback = _default_skill_service_endpoint()
+    if not env_values.get("AGENT_SKILL_SERVICE_URL"):
+        return []
+    return [fallback]
+
+
 def _select_endpoint_config(
     mcp_config_path: str | None,
     env_values: dict[str, str],
 ) -> dict[str, Any]:
     """Why: prefer explicit config, but allow env-based fallback for local/dev setups."""
-    if mcp_config_path:
-        config = load_mcp_config(mcp_config_path)
-        endpoint_name = _get_endpoint_name(config)
-        endpoint = _find_endpoint_by_name(config, endpoint_name)
-        if endpoint is None:
-            msg = "mcp_endpoint_not_found"
-            raise ValueError(msg)
-        return endpoint
-
-    fallback = _default_skill_service_endpoint()
-    if not env_values.get("AGENT_SKILL_SERVICE_URL"):
-        return {}
-    return fallback
+    selected = _select_endpoint_configs(mcp_config_path, env_values)
+    return selected[0] if selected else {}
 
 
 def _load_mcp_config_or_fallback(

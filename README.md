@@ -48,6 +48,15 @@ uv run mypy .
 uv run pytest -q
 ```
 
+# Logging (color + format)
+
+- Default console logs are now colorized and human-readable (`AGENT_LOG_FORMAT=pretty`, `AGENT_LOG_COLOR=true`).
+- For machine parsing/aggregation, switch to JSON logs:
+
+```bash
+AGENT_LOG_FORMAT=json AGENT_LOG_COLOR=false uv run uvicorn agent_core.api.main:app --reload
+```
+
 # External services (docker compose)
 
 ```bash
@@ -75,6 +84,37 @@ Services started:
     - `AGENT_EMBEDDING_OUTPUT_DIMENSIONALITY` (optional override)
     - `AGENT_OPENSEARCH_EMBEDDING_DIMS` must match generated vector length
 
+## Event persistence pipeline (Redis + OpenSearch)
+
+When `AGENT_STORAGE_BACKEND=opensearch`, runtime/callback events are not written directly to OpenSearch.
+They follow this path:
+
+1. ADK runtime/callback emits `EventRecord`.
+2. `RedisStreamEventRepository` publishes the event to Redis Stream `AGENT_EVENTS_STREAM_NAME`.
+3. `RedisToOpenSearchEventConsumer` (started with API lifespan) reads from the stream consumer group.
+4. Consumer persists into OpenSearch `agent_events` index via `OpenSearchEventRepository`.
+5. On success, consumer `XACK`s the stream message.
+6. On repeated failures, consumer writes the message to `AGENT_EVENTS_DLQ_STREAM_NAME`.
+
+Delivery semantics:
+- At-least-once delivery from Redis Streams.
+- Idempotent OpenSearch writes using stable `event_id` as document `_id`.
+- `/agent/plans/{plan_id}/trace` reads from OpenSearch and is eventually consistent.
+
+Relevant environment variables:
+- `AGENT_REDIS_URL` (default: `redis://localhost:6379/0`)
+- `AGENT_EVENTS_STREAM_NAME` (default: `agent.events`)
+- `AGENT_EVENTS_STREAM_GROUP` (default: `agent-events-consumers`)
+- `AGENT_EVENTS_STREAM_CONSUMER_NAME_PREFIX` (default: `agent-core`)
+- `AGENT_EVENTS_STREAM_MAXLEN` (default: `100000`)
+- `AGENT_EVENTS_CONSUMER_BATCH_SIZE` (default: `50`)
+- `AGENT_EVENTS_CONSUMER_BLOCK_MS` (default: `1000`)
+- `AGENT_EVENTS_CONSUMER_RECLAIM_IDLE_MS` (default: `60000`)
+- `AGENT_EVENTS_CONSUMER_RECLAIM_COUNT` (default: `50`)
+- `AGENT_EVENTS_CONSUMER_MAX_RETRIES` (default: `5`)
+- `AGENT_EVENTS_CONSUMER_BACKOFF_SECONDS` (default: `0.2`)
+- `AGENT_EVENTS_DLQ_STREAM_NAME` (default: `agent.events.dlq`)
+
 ## MCP configuration (JSON)
 
 - Default MCP registry file: `config/mcp_config.json` (override with `AGENT_MCP_CONFIG_PATH`)
@@ -101,3 +141,20 @@ Gemini runtime env:
     - `send_slack_message` (text/blocks + optional file)
     - `read_slack_messages` (message stream + attached file metadata)
     - `send_email_smtp` (preconfigured SMTP email, with optional attachments)
+
+### Slack read smoke test
+
+Use this script to verify `read_slack_messages` behavior and quickly debug token/channel issues.
+
+```bash
+export SLACK_BOT_TOKEN=...                     # unless configured in communication_config.json
+export SLACK_SMOKE_CHANNEL=C0123456789
+uv run python scripts/smoke_read_slack_messages.py --limit 10
+```
+
+Optional:
+
+```bash
+AGENT_COMMUNICATION_CONFIG_PATH=config/communication_config.json \
+uv run python scripts/smoke_read_slack_messages.py --channel C0123456789 --no-files
+```

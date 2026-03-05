@@ -2,6 +2,7 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
+import agent_core.api.main as api_main
 from agent_core.api.main import app
 from agent_core.domain.exceptions import PlanValidationError
 from agent_core.domain.models import AgentRunResponse
@@ -11,6 +12,8 @@ from agent_core.infra.adapters.in_memory import (
     InMemoryPlanRepository,
     InMemorySoulRepository,
 )
+from agent_core.infra.adapters.redis_events import RedisStreamEventRepository
+from agent_core.infra.events.consumer import RedisToOpenSearchEventConsumer
 
 
 def test_agent_run_boundary_is_preserved_and_subagents_endpoint_absent(monkeypatch: Any) -> None:
@@ -144,3 +147,38 @@ def test_agent_run_returns_structured_failure_for_infeasible_plan(monkeypatch: A
 
     assert response.status_code == 422
     assert response.json()["detail"]["reason"] == "plan_infeasible_over_max_steps"
+
+
+def test_opensearch_backend_wires_stream_event_write_path(monkeypatch: Any) -> None:
+    monkeypatch.setenv("AGENT_STORAGE_BACKEND", "opensearch")
+
+    class _FakeOpenSearch:
+        def __init__(self, **kwargs: Any) -> None:
+            _ = kwargs
+
+    class _FakeIndexManager:
+        def __init__(self, **kwargs: Any) -> None:
+            _ = kwargs
+
+        def ensure_indices_and_policies(self) -> None:
+            return None
+
+    class _FakeRedisClient:
+        async def aclose(self) -> None:
+            return None
+
+    fake_redis = _FakeRedisClient()
+    monkeypatch.setattr(api_main, "OpenSearch", _FakeOpenSearch)
+    monkeypatch.setattr(api_main, "OpenSearchIndexManager", _FakeIndexManager)
+    monkeypatch.setattr(
+        api_main,
+        "Redis",
+        type("_FakeRedis", (), {"from_url": staticmethod(lambda _url: fake_redis)}),
+    )
+
+    settings = api_main.Settings()
+    container = api_main.Container(settings)
+
+    assert isinstance(container.event_repo, RedisStreamEventRepository)
+    assert isinstance(container.events_consumer, RedisToOpenSearchEventConsumer)
+    assert container.adk_runtime.event_repo is container.event_repo

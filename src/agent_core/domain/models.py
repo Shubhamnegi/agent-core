@@ -108,4 +108,5 @@ class EventRecord:
     plan_id: str | None
     task_id: str | None
     payload: dict[str, Any]
+    event_id: str = field(default_factory=lambda: f"evt_{uuid4().hex}")
     ts: datetime = field(default_factory=utc_now)

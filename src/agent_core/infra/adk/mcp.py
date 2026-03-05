@@ -13,7 +13,7 @@ from google.adk.tools.mcp_tool import (
 )
 from mcp import StdioServerParameters
 
-PLANNER_DISCOVERY_TOOLS = ["find_relevant_skill", "load_instructions"]
+PLANNER_DISCOVERY_TOOLS = ["find_relevant_skill", "load_instruction", "load_instructions"]
 
 
 @dataclass(slots=True)
@@ -108,10 +108,7 @@ def resolve_mcp_endpoint(
             if value is not None:
                 resolved_headers[header_name] = value
 
-    planner_tools = endpoint_config.get("planner_tool_filter")
-    if not isinstance(planner_tools, list) or not planner_tools:
-        planner_tools = PLANNER_DISCOVERY_TOOLS
-    planner_tools = [tool for tool in planner_tools if isinstance(tool, str)]
+    planner_tools = PLANNER_DISCOVERY_TOOLS
 
     endpoint_name = endpoint_config.get("name")
     if not isinstance(endpoint_name, str) or not endpoint_name:
@@ -137,10 +134,7 @@ def build_planner_mcp_toolset(
     timeout: float = DEFAULT_MCP_SESSION_TIMEOUT,
 ) -> McpToolset:
     connection_params = _build_connection_params(endpoint, timeout=timeout)
-    return McpToolset(
-        connection_params=connection_params,
-        tool_filter=endpoint.planner_tools,
-    )
+    return McpToolset(connection_params=connection_params)
 
 
 def build_executor_mcp_toolset(
@@ -166,7 +160,7 @@ def resolve_mcp_endpoints(
     request_headers: dict[str, str],
     env_values: dict[str, str],
 ) -> list[ResolvedMcpEndpoint]:
-    endpoints = config.get("endpoints", [])
+    endpoints = _select_executor_endpoint_configs(config)
     if not isinstance(endpoints, list):
         return []
 
@@ -182,6 +176,33 @@ def resolve_mcp_endpoints(
             )
         )
     return resolved
+
+
+def _select_executor_endpoint_configs(config: dict[str, Any]) -> list[dict[str, Any]]:
+    endpoints = config.get("endpoints", [])
+    if not isinstance(endpoints, list):
+        return []
+
+    configured_names = config.get("executor_endpoints")
+    if not isinstance(configured_names, list) or not configured_names:
+        return [item for item in endpoints if isinstance(item, dict)]
+
+    by_name: dict[str, dict[str, Any]] = {}
+    for endpoint in endpoints:
+        if not isinstance(endpoint, dict):
+            continue
+        name = endpoint.get("name")
+        if isinstance(name, str) and name:
+            by_name[name] = endpoint
+
+    selected: list[dict[str, Any]] = []
+    for raw_name in configured_names:
+        if not isinstance(raw_name, str) or not raw_name:
+            continue
+        endpoint = by_name.get(raw_name)
+        if endpoint is not None:
+            selected.append(endpoint)
+    return selected
 
 
 def _build_connection_params(

@@ -1,14 +1,20 @@
 {
   "planner_endpoint": "skill_service",
+  "planner_endpoints": [
+    "skill_service",
+    "aws_cost_explorer",
+    "pyodide_sandbox"
+  ],
+  "executor_endpoints": [
+    "skill_service",
+    "aws_cost_explorer",
+    "pyodide_sandbox"
+  ],
   "endpoints": [
     {
       "name": "skill_service",
       "url_env": "AGENT_SKILL_SERVICE_URL",
       "transport": "streamable_http",
-      "planner_tool_filter": [
-        "find_relevant_skill",
-        "load_instruction"
-      ],
       "auth_headers": [
         {
           "name": "x-api-key",
@@ -27,6 +33,18 @@
       "stdio_env": {
         "FASTMCP_LOG_LEVEL": "ERROR",
         "AWS_PROFILE": "default"
+      }
+    },
+    {
+      "name": "pyodide_sandbox",
+      "transport": "stdio",
+      "command": "npx",
+      "args": [
+        "github:Shubhamnegi/mcp-pyodide"
+      ],
+      "stdio_env": {
+        "PYODIDE_DATA_DIR": "/tmp/data",
+        "PYODIDE_CACHE_DIR": "/tmp/cache"
       }
     }
   ]

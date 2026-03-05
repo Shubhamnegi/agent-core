@@ -77,6 +77,7 @@ def build_index_definition(
             "mappings": {
                 "dynamic": "strict",
                 "properties": {
+                    "event_id": {"type": "keyword"},
                     "event_type": {"type": "keyword"},
                     "tenant_id": {"type": "keyword"},
                     "session_id": {"type": "keyword"},
@@ -194,6 +195,7 @@ LOCAL_DOCUMENT_SCHEMAS: dict[str, dict[str, Any]] = {
     },
     INDEX_AGENT_EVENTS: {
         "required": {
+            "event_id": "string",
             "event_type": "string",
             "tenant_id": "string",
             "session_id": "string",

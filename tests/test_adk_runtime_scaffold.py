@@ -235,11 +235,11 @@ def test_prompt_contract_routes_memory_via_coordinator_and_planner() -> None:
 def _write_mcp_config(path: Path) -> None:
     payload = {
         "planner_endpoint": "skill_service",
+        "planner_endpoints": ["skill_service", "aws_cost_explorer"],
         "endpoints": [
             {
                 "name": "skill_service",
                 "url": "http://localhost:8081/mcp",
-                "planner_tool_filter": ["find_relevant_skill", "load_instructions"],
                 "auth_headers": [
                     {
                         "name": "x-api-key",
@@ -276,16 +276,16 @@ def test_adk_runtime_wires_mcp_toolsets_for_planner_and_executor_endpoints(
 
     runtime.configure_mcp_for_request({"x-skill-service-key": "request-key"})
 
-    assert isinstance(runtime.planner_mcp_toolset, McpToolset)
-    assert runtime.planner_mcp_toolset.tool_filter == ["find_relevant_skill", "load_instructions"]
-    assert runtime._resolved_planner_endpoint is not None
-    assert runtime._resolved_planner_endpoint.headers == {"x-api-key": "request-key"}
+    assert len(runtime.planner_mcp_toolsets) == 2
+    assert isinstance(runtime.planner_mcp_toolsets[0], McpToolset)
+    assert runtime.planner_mcp_toolsets[0].tool_filter is None
+    assert runtime._resolved_planner_endpoints[0].headers == {"x-api-key": "request-key"}
     assert len(runtime._resolved_executor_endpoints) == 2
     assert len(runtime.executor_mcp_toolsets) == 2
 
 
 def test_adk_subagents_always_include_infra_tool_suite() -> None:
-    planner = build_planner_agent(mcp_toolset=None)
+    planner = build_planner_agent(mcp_toolsets=None)
     executor = build_executor_agent(mcp_toolsets=None)
 
     planner_tools = {getattr(tool, "__name__", "") for tool in planner.tools}
@@ -293,7 +293,6 @@ def test_adk_subagents_always_include_infra_tool_suite() -> None:
     expected = {
         "write_temp",
         "read_lines",
-        "exec_python",
     }
 
     assert expected.issubset(planner_tools)
@@ -336,9 +335,9 @@ def test_adk_runtime_uses_env_fallback_key_when_request_header_missing(
 
     runtime.configure_mcp_for_request({})
 
-    assert isinstance(runtime.planner_mcp_toolset, McpToolset)
-    assert runtime._resolved_planner_endpoint is not None
-    assert runtime._resolved_planner_endpoint.headers == {"x-api-key": "fallback-key"}
+    assert len(runtime.planner_mcp_toolsets) == 2
+    assert isinstance(runtime.planner_mcp_toolsets[0], McpToolset)
+    assert runtime._resolved_planner_endpoints[0].headers == {"x-api-key": "fallback-key"}
 
 
 class _FakeSessionService:
@@ -662,6 +661,29 @@ async def test_before_tool_callback_blocks_planner_when_memory_precheck_required
     assert blocked["status"] == "blocked"
     assert blocked["reason"] == "memory_precheck_required_before_execution"
     assert blocked["required_agent"] == "memory_subagent_c"
+
+
+@pytest.mark.asyncio
+async def test_before_tool_callback_blocks_planner_non_skill_execution_tools() -> None:
+    token = bind_trace_context(
+        event_repo=_FakeEventRepository(),  # type: ignore[arg-type]
+        tenant_id="tenant_1",
+        session_id="session_1",
+        plan_id="plan_adk_trace_planner_guard_1",
+        require_planner_first_transfer=False,
+    )
+    try:
+        blocked = await before_tool_callback(
+            tool=SimpleNamespace(name="run_python"),
+            args={"code": "print('hello')"},
+            tool_context=SimpleNamespace(agent_name="planner_subagent_a"),
+        )
+    finally:
+        reset_trace_context(token)
+
+    assert blocked is not None
+    assert blocked["status"] == "blocked"
+    assert blocked["reason"] == "planner_must_use_skill_discovery_tools_only"
 
 
 @pytest.mark.asyncio

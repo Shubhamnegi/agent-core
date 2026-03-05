@@ -20,7 +20,6 @@ from agent_core.infra.adk.callbacks import (
     on_tool_error_callback,
 )
 from agent_core.infra.adk.tools import (
-    exec_python,
     read_lines,
     read_slack_messages,
     send_email_smtp,
@@ -123,7 +122,7 @@ def build_memory_agent(
 
 
 def build_planner_agent(
-    mcp_toolset: Any | None = None,
+    mcp_toolsets: list[Any] | None = None,
     model_name: str = "models/gemini-flash-lite-latest",
 ) -> LlmAgent:
     """Build planner agent.
@@ -131,8 +130,8 @@ def build_planner_agent(
     Why: planner always gets infra tools; MCP toolset is optional for environment-specific skills.
     """
     tools: list[Any] = _infra_tools()
-    if mcp_toolset is not None:
-        tools.append(mcp_toolset)
+    if mcp_toolsets is not None:
+        tools.extend(mcp_toolsets)
     return LlmAgent(
         name="planner_subagent_a",
         description="Planner role scaffold",
@@ -209,5 +208,4 @@ def _infra_tools() -> list[Any]:
     return [
         write_temp,
         read_lines,
-        exec_python,
     ]

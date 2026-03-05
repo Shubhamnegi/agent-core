@@ -7,6 +7,7 @@ from google.adk.tools.mcp_tool import (
 from agent_core.infra.adk.mcp import (
     ResolvedMcpEndpoint,
     build_planner_mcp_toolset,
+    resolve_mcp_endpoints,
     resolve_mcp_endpoint,
 )
 
@@ -16,7 +17,7 @@ def test_resolve_mcp_endpoint_defaults_to_streamable_http() -> None:
         endpoint_config={
             "name": "skill_service",
             "url": "https://example.com/mcp",
-            "planner_tool_filter": ["find_relevant_skill", "load_instructions"],
+            "planner_tool_filter": ["find_relevant_skill", "load_instruction"],
         },
         request_headers={},
         env_values={},
@@ -33,13 +34,14 @@ def test_build_planner_toolset_uses_streamable_http_by_default() -> None:
         command=None,
         args=[],
         stdio_env={},
-        planner_tools=["find_relevant_skill", "load_instructions"],
+        planner_tools=["find_relevant_skill", "load_instruction"],
         headers={"x-api-key": "secret"},
     )
 
     toolset = build_planner_mcp_toolset(endpoint)
 
     assert isinstance(toolset._connection_params, StreamableHTTPConnectionParams)
+    assert toolset.tool_filter is None
 
 
 def test_build_planner_toolset_uses_sse_when_configured() -> None:
@@ -57,6 +59,7 @@ def test_build_planner_toolset_uses_sse_when_configured() -> None:
     toolset = build_planner_mcp_toolset(endpoint)
 
     assert isinstance(toolset._connection_params, SseConnectionParams)
+    assert toolset.tool_filter is None
 
 
 def test_build_planner_toolset_uses_stdio_when_configured() -> None:
@@ -74,3 +77,41 @@ def test_build_planner_toolset_uses_stdio_when_configured() -> None:
     toolset = build_planner_mcp_toolset(endpoint)
 
     assert isinstance(toolset._connection_params, StdioConnectionParams)
+    assert toolset.tool_filter is None
+
+
+def test_resolve_mcp_endpoints_honors_executor_endpoints_filter() -> None:
+    config = {
+        "executor_endpoints": ["pyodide_sandbox", "skill_service"],
+        "endpoints": [
+            {
+                "name": "skill_service",
+                "url": "https://example.com/mcp",
+                "transport": "streamable_http",
+            },
+            {
+                "name": "aws_cost_explorer",
+                "transport": "stdio",
+                "command": "uvx",
+                "args": ["awslabs.cost-explorer-mcp-server@latest"],
+            },
+            {
+                "name": "pyodide_sandbox",
+                "transport": "stdio",
+                "command": "npx",
+                "args": [
+                    "@modelcontextprotocol/inspector",
+                    "npx",
+                    "github:Shubhamnegi/mcp-pyodide",
+                ],
+            },
+        ],
+    }
+
+    resolved = resolve_mcp_endpoints(
+        config=config,
+        request_headers={},
+        env_values={},
+    )
+
+    assert [endpoint.name for endpoint in resolved] == ["pyodide_sandbox", "skill_service"]

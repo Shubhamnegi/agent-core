@@ -54,7 +54,7 @@ Use this checklist to track delivery against the Agentic Service Architecture Bl
 ## B. Planning and plan constraints
 
 - [x] SubAgent-A uses `find_relevant_skill` for candidate discovery.
-- [x] SubAgent-A loads manifests via `load_instructions` for reranking.
+- [x] SubAgent-A loads manifests via `load_instruction` for reranking.
 - [x] SubAgent-A verifies each step `return_spec` against skill output schema.
 - [x] Plan enforces max 10 steps.
 - [x] Infeasible tasks (>10 steps) return structured failure.

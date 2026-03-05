@@ -80,6 +80,8 @@ class OpenSearchIndexManager:
             if self.client.indices.exists(index=resolved):
                 if base_index == INDEX_AGENT_MEMORY:
                     self._upgrade_memory_index_mapping_if_needed(resolved)
+                if base_index == INDEX_AGENT_EVENTS:
+                    self._upgrade_event_index_mapping_if_needed(resolved)
                 continue
 
             definition = build_index_definition(
@@ -90,6 +92,8 @@ class OpenSearchIndexManager:
                 self.client.indices.create(index=resolved, body=definition)
                 if base_index == INDEX_AGENT_MEMORY:
                     self._upgrade_memory_index_mapping_if_needed(resolved)
+                if base_index == INDEX_AGENT_EVENTS:
+                    self._upgrade_event_index_mapping_if_needed(resolved)
             except Exception as exc:
                 if not _is_already_exists_conflict(exc):
                     raise
@@ -107,6 +111,16 @@ class OpenSearchIndexManager:
                         "type": "object",
                         "dynamic": True,
                     },
+                }
+            },
+        )
+
+    def _upgrade_event_index_mapping_if_needed(self, resolved_index: str) -> None:
+        self.client.indices.put_mapping(
+            index=resolved_index,
+            body={
+                "properties": {
+                    "event_id": {"type": "keyword"},
                 }
             },
         )
@@ -268,7 +282,9 @@ class OpenSearchMemoryRepository(MemoryRepository):
         for hit in hits:
             source = hit.get("_source") if isinstance(hit, dict) else None
             if isinstance(source, dict):
-                sources.append(source)
+                sanitized = dict(source)
+                sanitized.pop("embedding", None)
+                sources.append(sanitized)
         return sources
 
     async def _acquire_write_lock(self, namespaced_key: str, owner_task_id: str) -> None:
@@ -307,6 +323,7 @@ class OpenSearchEventRepository(EventRepository):
 
     async def append(self, event: EventRecord) -> None:
         document = {
+            "event_id": event.event_id,
             "event_type": event.event_type,
             "tenant_id": event.tenant_id,
             "session_id": event.session_id,
@@ -318,7 +335,7 @@ class OpenSearchEventRepository(EventRepository):
         validate_document_schema(INDEX_AGENT_EVENTS, document)
         self.client.index(
             index=self.index_name,
-            id=f"evt_{uuid4().hex}",
+            id=event.event_id,
             body=document,
             refresh="wait_for",
         )
@@ -348,6 +365,7 @@ class OpenSearchEventRepository(EventRepository):
                     plan_id=source.get("plan_id"),
                     task_id=source.get("task_id"),
                     payload=source.get("payload", {}),
+                    event_id=source.get("event_id", f"evt_{uuid4().hex}"),
                     ts=_parse_iso_datetime(source.get("ts")),
                 )
             )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import mimetypes
 import os
 import smtplib
@@ -15,6 +16,8 @@ from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
 from agent_core.infra.adk.tool_runtime_context import get_tool_runtime_context
+
+logger = logging.getLogger(__name__)
 
 
 async def send_slack_message(
@@ -138,7 +141,15 @@ async def read_slack_messages(
     """
     slack_cfg = _resolve_slack_config()
     token = slack_cfg.get("bot_token")
+    base_url = _to_optional_str(slack_cfg.get("base_url"))
     if not isinstance(token, str) or not token:
+        logger.warning(
+            "slack_read_not_configured",
+            extra={
+                "channel": channel,
+                "reason": "slack_token_missing",
+            },
+        )
         return {
             "status": "not_configured",
             "reason": "slack_token_missing",
@@ -146,24 +157,66 @@ async def read_slack_messages(
         }
 
     safe_limit = max(1, min(limit, 200))
+    logger.info(
+        "slack_read_start",
+        extra={
+            "channel": channel,
+            "limit": safe_limit,
+            "include_files": include_files,
+            "base_url": base_url,
+            "has_token": bool(token),
+        },
+    )
 
     def _read() -> dict[str, Any]:
-        client = _build_slack_client(token=token, base_url=_to_optional_str(slack_cfg.get("base_url")))
+        client = _build_slack_client(token=token, base_url=base_url)
+        resolved_channel = _resolve_slack_channel_id(client=client, channel=channel)
+        if resolved_channel is None:
+            logger.warning(
+                "slack_read_channel_resolution_failed",
+                extra={"channel": channel},
+            )
+            return {
+                "status": "failed",
+                "reason": "channel_not_found",
+                "channel": channel,
+            }
         try:
-            response = client.conversations_history(channel=channel, limit=safe_limit)
+            response = client.conversations_history(channel=resolved_channel, limit=safe_limit)
         except SlackApiError as exc:
+            slack_error = _to_optional_str(getattr(exc.response, "get", lambda *_: None)("error"))
+            logger.warning(
+                "slack_read_api_error",
+                extra={
+                    "channel": channel,
+                    "resolved_channel": resolved_channel,
+                    "limit": safe_limit,
+                    "slack_error": slack_error,
+                    "error": str(exc),
+                },
+            )
             return {
                 "status": "failed",
                 "reason": "slack_api_error",
                 "channel": channel,
+                "resolved_channel": resolved_channel,
                 "error": str(exc),
-                "slack_error": _to_optional_str(getattr(exc.response, "get", lambda *_: None)("error")),
+                "slack_error": slack_error,
             }
         except Exception as exc:
+            logger.exception(
+                "slack_read_unhandled_error",
+                extra={
+                    "channel": channel,
+                    "resolved_channel": resolved_channel,
+                    "limit": safe_limit,
+                },
+            )
             return {
                 "status": "failed",
                 "reason": f"slack_request_failed:{exc}",
                 "channel": channel,
+                "resolved_channel": resolved_channel,
             }
 
         messages_raw = response.get("messages", [])
@@ -181,12 +234,23 @@ async def read_slack_messages(
                 item["files"] = _normalize_slack_file_entries(raw.get("files"))
             normalized.append(item)
 
-        return {
+        output = {
             "status": "ok",
             "channel": channel,
+            "resolved_channel": resolved_channel,
             "count": len(normalized),
             "messages": normalized,
         }
+        logger.info(
+            "slack_read_success",
+            extra={
+                "channel": channel,
+                "resolved_channel": resolved_channel,
+                "count": len(normalized),
+                "include_files": include_files,
+            },
+        )
+        return output
 
     return await asyncio.to_thread(_read)
 
@@ -315,6 +379,50 @@ def _build_slack_client(token: str, base_url: str | None) -> WebClient:
     return WebClient(token=token)
 
 
+def _resolve_slack_channel_id(client: WebClient, channel: str) -> str | None:
+    normalized = channel.strip()
+    if not normalized:
+        return None
+    if normalized.startswith("#"):
+        normalized = normalized[1:]
+    normalized = normalized.strip()
+    if not normalized:
+        return None
+    normalized_lower = normalized.lower()
+    if normalized[0] in {"C", "G", "D"}:
+        return normalized
+
+    cursor: str | None = None
+    while True:
+        response = client.conversations_list(
+            types="public_channel,private_channel",
+            limit=200,
+            cursor=cursor,
+        )
+        channels = _response_get(response, "channels", [])
+        for item in channels:
+            if not isinstance(item, dict):
+                continue
+            name = _to_optional_str(item.get("name"))
+            if isinstance(name, str) and name.lower() == normalized_lower:
+                return _to_optional_str(item.get("id"))
+        metadata = _response_get(response, "response_metadata", {})
+        next_cursor = _to_optional_str(metadata.get("next_cursor")) if isinstance(metadata, dict) else None
+        if not next_cursor:
+            break
+        cursor = next_cursor
+    return None
+
+
+def _response_get(response: Any, key: str, default: Any) -> Any:
+    getter = getattr(response, "get", None)
+    if callable(getter):
+        return getter(key, default)
+    if isinstance(response, dict):
+        return response.get(key, default)
+    return default
+
+
 def _normalize_slack_file_entries(raw_files: Any) -> list[dict[str, Any]]:
     if not isinstance(raw_files, list):
         return []
@@ -339,12 +447,22 @@ def _resolve_slack_config() -> dict[str, Any]:
     config = _load_communication_config()
     raw = config.get("slack") if isinstance(config, dict) else None
     slack = raw if isinstance(raw, dict) else {}
+    configured_env_name = _to_optional_str(slack.get("bot_token_env"))
+    token_from_default_env = _resolve_secret(
+        explicit=None,
+        env_name="SLACK_BOT_TOKEN",
+    )
+    token_from_configured_env = (
+        _resolve_secret(explicit=None, env_name=configured_env_name)
+        if configured_env_name
+        else None
+    )
     token = _resolve_secret(
         explicit=_to_optional_str(slack.get("bot_token")),
-        env_name=_to_optional_str(slack.get("bot_token_env")) or "SLACK_BOT_TOKEN",
+        env_name="SLACK_BOT_TOKEN",
     )
     return {
-        "bot_token": token,
+        "bot_token": token or token_from_default_env or token_from_configured_env,
         "base_url": _to_optional_str(slack.get("base_url")) or "https://slack.com/api",
     }
 
@@ -372,12 +490,15 @@ def _resolve_smtp_config() -> dict[str, Any]:
 def _load_communication_config() -> dict[str, Any]:
     context = get_tool_runtime_context()
     configured_path = context.communication_config_path if context is not None else None
-    path = Path(configured_path or "config/communication_config.json")
+    env_path = os.getenv("AGENT_COMMUNICATION_CONFIG_PATH")
+    path = Path(configured_path or env_path or "config/communication_config.json")
     if not path.exists():
+        logger.warning("communication_config_missing", extra={"path": str(path)})
         return {}
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
+        logger.exception("communication_config_invalid_json", extra={"path": str(path)})
         return {}
     return payload if isinstance(payload, dict) else {}
 

@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from opensearchpy import OpenSearch
+from redis.asyncio import Redis
 from starlette.responses import Response
 
 from agent_core.api.schemas import AgentRunPayload, AgentRunResult, MemoryQueryPayload, SoulPayload
@@ -34,8 +35,10 @@ from agent_core.infra.adapters.opensearch import (
     OpenSearchPlanRepository,
     OpenSearchSoulRepository,
 )
+from agent_core.infra.adapters.redis_events import RedisStreamEventRepository
 from agent_core.infra.adk.runtime import AdkRuntimeScaffold
 from agent_core.infra.config import Settings
+from agent_core.infra.events.consumer import RedisToOpenSearchEventConsumer
 from agent_core.infra.logging import configure_logging, request_id_ctx
 
 logger = logging.getLogger(__name__)
@@ -49,6 +52,8 @@ class Container:
         self.event_repo: EventRepository
         self.soul_repo: SoulRepository
         self.embedding_service: EmbeddingService | None = None
+        self.redis_client: Redis | None = None
+        self.events_consumer: RedisToOpenSearchEventConsumer | None = None
 
         if settings.storage_backend == "opensearch":
             # Why lazy-by-config: keeps local dev/tests stable without requiring OpenSearch uptime.
@@ -79,9 +84,31 @@ class Container:
                 embedding_service=self.embedding_service,
                 expected_embedding_dims=settings.opensearch_embedding_dims,
             )
-            self.event_repo = OpenSearchEventRepository(
+            opensearch_event_repo = OpenSearchEventRepository(
                 client=client,
                 index_prefix=settings.opensearch_index_prefix,
+            )
+            self.redis_client = Redis.from_url(settings.redis_url)
+            consumer_name = f"{settings.events_stream_consumer_name_prefix}-{uuid4().hex[:8]}"
+            self.event_repo = RedisStreamEventRepository(
+                redis_client=self.redis_client,
+                stream_name=settings.events_stream_name,
+                read_repo=opensearch_event_repo,
+                maxlen=settings.events_stream_maxlen,
+            )
+            self.events_consumer = RedisToOpenSearchEventConsumer(
+                redis_client=self.redis_client,
+                sink_repo=opensearch_event_repo,
+                stream_name=settings.events_stream_name,
+                group_name=settings.events_stream_group,
+                consumer_name=consumer_name,
+                dlq_stream_name=settings.events_dlq_stream_name,
+                batch_size=settings.events_consumer_batch_size,
+                block_ms=settings.events_consumer_block_ms,
+                reclaim_idle_ms=settings.events_consumer_reclaim_idle_ms,
+                reclaim_count=settings.events_consumer_reclaim_count,
+                max_retries=settings.events_consumer_max_retries,
+                backoff_seconds=settings.events_consumer_backoff_seconds,
             )
             self.soul_repo = OpenSearchSoulRepository(
                 client=client,
@@ -107,15 +134,34 @@ class Container:
             mcp_session_timeout=settings.mcp_session_timeout,
         )
 
+    async def start_background_services(self) -> None:
+        if self.events_consumer is not None:
+            await self.events_consumer.start()
+
+    async def stop_background_services(self) -> None:
+        if self.events_consumer is not None:
+            await self.events_consumer.stop()
+        if self.redis_client is not None:
+            await self.redis_client.aclose()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = Settings()
-    configure_logging(settings.log_level)
-    app.state.container = Container(settings)
+    configure_logging(
+        level=settings.log_level,
+        log_format=settings.log_format,
+        color=settings.log_color,
+    )
+    container = Container(settings)
+    app.state.container = container
+    await container.start_background_services()
     logger.info("application_started")
-    yield
-    logger.info("application_stopped")
+    try:
+        yield
+    finally:
+        await container.stop_background_services()
+        logger.info("application_stopped")
 
 
 app = FastAPI(title="Agent Core", version="0.1.0", lifespan=lifespan)

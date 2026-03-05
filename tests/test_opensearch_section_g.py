@@ -176,6 +176,17 @@ def test_section_g_index_manager_tolerates_index_create_conflict_race() -> None:
     assert set(client.indices.created.keys()) == expected_other_indexes
 
 
+def test_section_g_index_manager_upgrades_existing_event_mapping_with_event_id() -> None:
+    client = _FakeOpenSearchClient()
+    client.indices.created[INDEX_AGENT_EVENTS] = build_index_definition(INDEX_AGENT_EVENTS)
+    manager = OpenSearchIndexManager(client=client, index_prefix="", embedding_dims=128)
+
+    manager.ensure_indices_and_policies()
+
+    updated = client.indices.updated_mappings[INDEX_AGENT_EVENTS]
+    assert updated["properties"]["event_id"]["type"] == "keyword"
+
+
 def test_section_g_local_schema_validation_raises_storage_schema_error() -> None:
     # Why this case: missing required fields is the most common integration failure mode.
     invalid_event = {
@@ -208,6 +219,7 @@ async def test_section_g_event_repository_validates_and_persists_event_documents
     repo = OpenSearchEventRepository(client=client)
 
     event = EventRecord(
+        event_id="evt_test_1",
         event_type="plan.persisted",
         tenant_id="tenant-1",
         session_id="session-1",
@@ -221,6 +233,7 @@ async def test_section_g_event_repository_validates_and_persists_event_documents
     events = await repo.list_by_plan("plan-1")
 
     assert len(events) == 1
+    assert events[0].event_id == "evt_test_1"
     assert events[0].event_type == "plan.persisted"
 
 
@@ -232,6 +245,7 @@ async def test_section_g_event_repository_normalizes_volatile_nested_payload_fie
     repo = OpenSearchEventRepository(client=client)
 
     event = EventRecord(
+        event_id="evt_test_2",
         event_type="adk.llm_response",
         tenant_id="tenant-1",
         session_id="session-1",
@@ -254,6 +268,7 @@ async def test_section_g_event_repository_normalizes_volatile_nested_payload_fie
 
     persisted = next(iter(client.docs[index_name].values()))
     payload = persisted["payload"]
+    assert persisted["event_id"] == "evt_test_2"
 
     assert "tool_args" not in payload
     assert payload["tool_args_json"] == '{"group_by": "daily"}'
@@ -263,6 +278,30 @@ async def test_section_g_event_repository_normalizes_volatile_nested_payload_fie
     assert payload["function_responses"][0]["name"] == "load_instruction"
     assert "response" not in payload["function_responses"][0]
     assert payload["function_responses"][0]["response_json"] == '{"status": "ok"}'
+
+
+@pytest.mark.asyncio
+async def test_section_g_event_repository_is_idempotent_by_event_id() -> None:
+    client = _FakeOpenSearchClient()
+    index_name = "agent_events"
+    client.indices.create(index=index_name, body=build_index_definition(index_name))
+    repo = OpenSearchEventRepository(client=client)
+
+    event = EventRecord(
+        event_id="evt_same",
+        event_type="plan.persisted",
+        tenant_id="tenant-1",
+        session_id="session-1",
+        plan_id="plan-1",
+        task_id=None,
+        payload={"steps": 2},
+        ts=datetime.now(UTC),
+    )
+
+    await repo.append(event)
+    await repo.append(event)
+
+    assert len(client.docs[index_name]) == 1
 
 
 @pytest.mark.asyncio
@@ -327,3 +366,48 @@ async def test_section_g_memory_repository_detects_embedding_dimension_mismatch(
             value={"total": 42},
             return_spec_shape={"total": "integer"},
         )
+
+
+@pytest.mark.asyncio
+async def test_section_g_memory_repository_search_hides_embedding_vectors() -> None:
+    client = _FakeOpenSearchClient()
+    repo = OpenSearchMemoryRepository(
+        client=client,
+        embedding_service=_FakeEmbeddingService([0.1, 0.2, 0.3]),
+        expected_embedding_dims=3,
+    )
+
+    def _fake_search(index: str, body: dict) -> dict:
+        _ = index
+        _ = body
+        return {
+            "hits": {
+                "hits": [
+                    {
+                        "_source": {
+                            "namespaced_key": "tenant-1:session-1:task-1:summary",
+                            "tenant_id": "tenant-1",
+                            "session_id": "session-1",
+                            "scope": "session",
+                            "key": "summary",
+                            "value": {"total": 42},
+                            "embedding": [0.1, 0.2, 0.3],
+                        }
+                    }
+                ]
+            }
+        }
+
+    client.search = _fake_search  # type: ignore[method-assign]
+
+    results = await repo.search(
+        tenant_id="tenant-1",
+        user_id="user-1",
+        session_id="session-1",
+        query_text="summary",
+        scope="session",
+        top_k=5,
+    )
+
+    assert len(results) == 1
+    assert "embedding" not in results[0]

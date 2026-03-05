@@ -27,7 +27,7 @@ def _pick_tool_call(tools: list[Any]) -> tuple[str, dict[str, Any]] | None:
     preferred = [
         ("find_relevant_skill", {"query": "aws bill for yesterday"}),
         ("find_relevant_skills", {"query": "aws bill for yesterday"}),
-        ("load_instructions", {"skill_name": "aws_cost_explorer"}),
+        ("load_instruction", {"skill_name": "aws_cost_explorer"}),
     ]
     names = {getattr(tool, "name", "") for tool in tools}
     for tool_name, args in preferred:

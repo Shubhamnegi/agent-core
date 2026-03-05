@@ -30,6 +30,11 @@ _MEMORY_TOOL_NAMES = {
     "save_action_memory",
     "search_relevant_memory",
 }
+_PLANNER_ALLOWED_EXECUTION_TOOLS = {
+    "find_relevant_skill",
+    "load_instruction",
+    "load_instructions",
+}
 
 
 @dataclass(slots=True)
@@ -339,6 +344,26 @@ async def before_tool_callback(
             "required_agent": "memory_subagent_c",
         }
 
+    if (
+        agent_name == "planner_subagent_a"
+        and tool.name != "transfer_to_agent"
+        and tool.name not in _PLANNER_ALLOWED_EXECUTION_TOOLS
+    ):
+        logger.warning(
+            "planner_tool_execution_blocked",
+            extra={
+                "tool_name": tool.name,
+                "agent": agent_name,
+                "reason": "planner_must_use_skill_discovery_tools_only",
+                "allowed_tools": sorted(_PLANNER_ALLOWED_EXECUTION_TOOLS),
+            },
+        )
+        return {
+            "status": "blocked",
+            "reason": "planner_must_use_skill_discovery_tools_only",
+            "required_tools": sorted(_PLANNER_ALLOWED_EXECUTION_TOOLS),
+        }
+
     if tool.name == "transfer_to_agent":
         destination = args.get("agent_name") if isinstance(args, dict) else None
         trace_context = _trace_context.get()
@@ -483,14 +508,14 @@ async def before_tool_callback(
                     return {
                         "status": "blocked",
                         "reason": "planner_must_load_skills_before_executor",
-                        "required_tool": "load_instruction_or_load_instructions",
+                        "required_tool": "load_instruction_or_load_instruction",
                     }
 
     trace_context = _trace_context.get()
     if trace_context is not None and agent_name == "planner_subagent_a":
         if tool.name == "find_relevant_skill":
             trace_context.planner_find_skill_called = True
-        if tool.name in {"load_instruction", "load_instructions"}:
+        if tool.name in {"load_instruction", "load_instruction"}:
             trace_context.planner_load_skill_called = True
     return None
 
@@ -567,10 +592,17 @@ async def on_tool_error_callback(
     Why: callers should receive consistent failure shape regardless of tool internals.
     """
     effective_error = error or exc or RuntimeError("unknown_tool_error")
+    agent_name = getattr(tool_context, "agent_name", "unknown")
+    trace_context = _trace_context.get()
     logger.error(
         "tool_call_error",
         extra={
             "tool_name": tool.name,
+            "agent": agent_name,
+            "tool_args": args,
+            "tenant_id": trace_context.tenant_id if trace_context is not None else None,
+            "session_id": trace_context.session_id if trace_context is not None else None,
+            "plan_id": trace_context.plan_id if trace_context is not None else None,
             "error_type": type(effective_error).__name__,
             "error": str(effective_error),
         },
@@ -578,5 +610,6 @@ async def on_tool_error_callback(
     return {
         "status": "failed",
         "tool_name": tool.name,
+        "agent": agent_name,
         "reason": str(effective_error),
     }

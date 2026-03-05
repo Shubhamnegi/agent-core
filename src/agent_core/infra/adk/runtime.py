@@ -48,7 +48,7 @@ from agent_core.infra.adk.runtime_mcp_resolver import (
     _endpoint_debug,
     _load_mcp_config_or_fallback,
     _normalize_headers,
-    _select_endpoint_config,
+    _select_endpoint_configs,
 )
 from agent_core.infra.adk.runtime_memory_metadata import (
     _MemoryUsageMetadata,
@@ -119,6 +119,13 @@ def _has_tool_failure(function_responses: list[dict[str, Any]]) -> bool:
     return False
 
 
+def _is_retryable_model_server_error(exc: Exception) -> bool:
+    if type(exc).__name__ != "ServerError":
+        return False
+    message = str(exc).upper()
+    return "500" in message and "INTERNAL" in message
+
+
 class AdkRuntimeScaffold:
     """Runtime coordinator for the ADK scaffold.
 
@@ -158,19 +165,21 @@ class AdkRuntimeScaffold:
             default_model_name=model_name,
             config_path=agent_models_config_path,
         )
-        self.planner_mcp_toolset: McpToolset | None = None
+        self.planner_mcp_toolsets: list[McpToolset] = []
         self.executor_mcp_toolsets: list[McpToolset] = []
-        self._resolved_planner_endpoint: ResolvedMcpEndpoint | None = None
+        self._resolved_planner_endpoints: list[ResolvedMcpEndpoint] = []
         self._resolved_executor_endpoints: list[ResolvedMcpEndpoint] = []
         self._rebuild_runtime_graph()
 
     def configure_mcp_for_request(self, request_headers: dict[str, str]) -> None:
-        self._resolved_planner_endpoint = self._resolve_planner_endpoint(request_headers)
+        self._resolved_planner_endpoints = self._resolve_planner_endpoints(request_headers)
         self._resolved_executor_endpoints = self._resolve_executor_endpoints(request_headers)
         logger.info(
             "adk_runtime_mcp_resolved",
             extra={
-                "planner_endpoint": _endpoint_debug(self._resolved_planner_endpoint),
+                "planner_endpoints": [
+                    _endpoint_debug(endpoint) for endpoint in self._resolved_planner_endpoints
+                ],
                 "executor_endpoints": [
                     _endpoint_debug(endpoint) for endpoint in self._resolved_executor_endpoints
                 ],
@@ -179,14 +188,13 @@ class AdkRuntimeScaffold:
         self._rebuild_runtime_graph()
 
     def _rebuild_runtime_graph(self) -> None:
-        self.planner_mcp_toolset = (
+        self.planner_mcp_toolsets = [
             build_planner_mcp_toolset(
-                self._resolved_planner_endpoint,
+                endpoint,
                 timeout=self.mcp_session_timeout,
             )
-            if self._resolved_planner_endpoint is not None
-            else None
-        )
+            for endpoint in self._resolved_planner_endpoints
+        ]
         self.executor_mcp_toolsets = build_executor_mcp_toolsets(
             self._resolved_executor_endpoints,
             timeout=self.mcp_session_timeout,
@@ -194,7 +202,7 @@ class AdkRuntimeScaffold:
         logger.info(
             "adk_runtime_graph_rebuilt",
             extra={
-                "planner_toolset_enabled": self.planner_mcp_toolset is not None,
+                "planner_toolset_count": len(self.planner_mcp_toolsets),
                 "executor_toolset_count": len(self.executor_mcp_toolsets),
                 "agent_models": self.agent_models,
             },
@@ -202,7 +210,7 @@ class AdkRuntimeScaffold:
 
         self.memory_agent = build_memory_agent(model_name=self.agent_models["memory"])
         self.planner_agent = build_planner_agent(
-            mcp_toolset=self.planner_mcp_toolset,
+            mcp_toolsets=self.planner_mcp_toolsets,
             model_name=self.agent_models["planner"],
         )
         self.executor_agent = build_executor_agent(
@@ -244,99 +252,123 @@ class AdkRuntimeScaffold:
         )
         if memory_disabled_by_user:
             requires_memory_precheck = False
-        trace_token = None
-        tool_context_token = bind_tool_runtime_context(
-            tenant_id=request.tenant_id,
-            user_id=request.user_id,
-            session_id=request.session_id,
-            plan_id=plan_id,
-            memory_repo=self.memory_repo,
-            embedding_service=self.embedding_service,
-            communication_config_path=self.communication_config_path,
-        )
-        if self.event_repo is not None:
-            trace_token = bind_trace_context(
-                event_repo=self.event_repo,
+        max_attempts = 2
+        for attempt in range(1, max_attempts + 1):
+            trace_token = None
+            tool_context_token = bind_tool_runtime_context(
                 tenant_id=request.tenant_id,
+                user_id=request.user_id,
                 session_id=request.session_id,
                 plan_id=plan_id,
-                require_planner_first_transfer=is_first_turn,
-                allow_memory_usage=not memory_disabled_by_user,
-                require_memory_precheck=requires_memory_precheck,
-                planner_expected_tools=(
-                    list(self._resolved_planner_endpoint.planner_tools)
-                    if self._resolved_planner_endpoint is not None
-                    else []
-                ),
+                memory_repo=self.memory_repo,
+                embedding_service=self.embedding_service,
+                communication_config_path=self.communication_config_path,
             )
-        events = self.runner.run_async(
-            user_id=request.user_id,
-            session_id=request.session_id,
-            new_message=types.Content(role="user", parts=[types.Part(text=request.message)]),
-        )
-
-        # Why: capture rich event context to choose a safe final user-facing response.
-        text_events: list[tuple[str | None, bool, str]] = []
-        non_planner_activity_seen = False
-        tool_failure_seen = False
-        memory_metadata = _MemoryUsageMetadata()
-        try:
-            async for event in events:
-                author = _to_optional_str(getattr(event, "author", None))
-                is_final = bool(getattr(event, "is_final_response", False))
-                text = _extract_event_text(event)
-                function_responses = _extract_event_function_responses(event)
-                if text:
-                    text_events.append((author, is_final, text))
-                if author is not None and author != "planner_subagent_a":
-                    non_planner_activity_seen = True
-                if _has_tool_failure(function_responses):
-                    tool_failure_seen = True
-                memory_metadata = _merge_memory_metadata(
-                    memory_metadata,
-                    _extract_memory_usage_metadata(function_responses),
+            if self.event_repo is not None:
+                trace_token = bind_trace_context(
+                    event_repo=self.event_repo,
+                    tenant_id=request.tenant_id,
+                    session_id=request.session_id,
+                    plan_id=plan_id,
+                    require_planner_first_transfer=is_first_turn,
+                    allow_memory_usage=not memory_disabled_by_user,
+                    require_memory_precheck=requires_memory_precheck,
+                    planner_expected_tools=(
+                        sorted(
+                            {
+                                tool_name
+                                for endpoint in self._resolved_planner_endpoints
+                                for tool_name in endpoint.planner_tools
+                            }
+                        )
+                    ),
                 )
-                await self._mirror_adk_event(request=request, plan_id=plan_id, event=event)
 
-            response = _select_user_response_text(
-                text_events=text_events,
-                non_planner_activity_seen=non_planner_activity_seen,
-                tool_failure_seen=tool_failure_seen,
+            events = self.runner.run_async(
+                user_id=request.user_id,
+                session_id=request.session_id,
+                new_message=types.Content(role="user", parts=[types.Part(text=request.message)]),
             )
-            response = _sanitize_user_response(response)
-            response = _apply_memory_disclosure(
-                response=response,
-                memory_metadata=memory_metadata,
-                memory_disabled_by_user=memory_disabled_by_user,
-            )
-            await self._index_session_in_memory(request)
-            return AgentRunResponse(
-                status="complete",
-                response=response,
-                plan_id=plan_id,
-            )
-        except Exception as exc:
-            logger.exception(
-                "adk_runtime_run_failed",
-                extra={
-                    "tenant_id": request.tenant_id,
-                    "user_id": request.user_id,
-                    "session_id": request.session_id,
-                    "plan_id": plan_id,
-                    "planner_endpoint": _endpoint_debug(self._resolved_planner_endpoint),
-                    "executor_endpoints": [
-                        _endpoint_debug(endpoint) for endpoint in self._resolved_executor_endpoints
-                    ],
-                    "model_name": self.model_name,
-                    "mcp_config_path": self.mcp_config_path,
-                    "error_type": type(exc).__name__,
-                },
-            )
-            raise
-        finally:
-            reset_tool_runtime_context(tool_context_token)
-            if trace_token is not None:
-                reset_trace_context(trace_token)
+
+            text_events: list[tuple[str | None, bool, str]] = []
+            non_planner_activity_seen = False
+            tool_failure_seen = False
+            memory_metadata = _MemoryUsageMetadata()
+            try:
+                async for event in events:
+                    author = _to_optional_str(getattr(event, "author", None))
+                    is_final = bool(getattr(event, "is_final_response", False))
+                    text = _extract_event_text(event)
+                    function_responses = _extract_event_function_responses(event)
+                    if text:
+                        text_events.append((author, is_final, text))
+                    if author is not None and author != "planner_subagent_a":
+                        non_planner_activity_seen = True
+                    if _has_tool_failure(function_responses):
+                        tool_failure_seen = True
+                    memory_metadata = _merge_memory_metadata(
+                        memory_metadata,
+                        _extract_memory_usage_metadata(function_responses),
+                    )
+                    await self._mirror_adk_event(request=request, plan_id=plan_id, event=event)
+
+                response = _select_user_response_text(
+                    text_events=text_events,
+                    non_planner_activity_seen=non_planner_activity_seen,
+                    tool_failure_seen=tool_failure_seen,
+                )
+                response = _sanitize_user_response(response)
+                response = _apply_memory_disclosure(
+                    response=response,
+                    memory_metadata=memory_metadata,
+                    memory_disabled_by_user=memory_disabled_by_user,
+                )
+                await self._index_session_in_memory(request)
+                return AgentRunResponse(
+                    status="complete",
+                    response=response,
+                    plan_id=plan_id,
+                )
+            except Exception as exc:
+                will_retry = attempt < max_attempts and _is_retryable_model_server_error(exc)
+                logger.exception(
+                    "adk_runtime_run_failed",
+                    extra={
+                        "tenant_id": request.tenant_id,
+                        "user_id": request.user_id,
+                        "session_id": request.session_id,
+                        "plan_id": plan_id,
+                        "planner_endpoints": [
+                            _endpoint_debug(endpoint) for endpoint in self._resolved_planner_endpoints
+                        ],
+                        "executor_endpoints": [
+                            _endpoint_debug(endpoint) for endpoint in self._resolved_executor_endpoints
+                        ],
+                        "model_name": self.model_name,
+                        "mcp_config_path": self.mcp_config_path,
+                        "error_type": type(exc).__name__,
+                        "attempt": attempt,
+                        "will_retry": will_retry,
+                    },
+                )
+                if not will_retry:
+                    raise
+                logger.warning(
+                    "adk_runtime_retrying_after_model_server_error",
+                    extra={
+                        "tenant_id": request.tenant_id,
+                        "session_id": request.session_id,
+                        "plan_id": plan_id,
+                        "attempt": attempt,
+                    },
+                )
+            finally:
+                reset_tool_runtime_context(tool_context_token)
+                if trace_token is not None:
+                    reset_trace_context(trace_token)
+
+        msg = "adk_runtime_retry_exhausted"
+        raise RuntimeError(msg)
 
     async def search_cross_session_memory(self, user_id: str, query: str) -> Any:
         if self.memory_service is None:
@@ -408,19 +440,22 @@ class AdkRuntimeScaffold:
             )
         )
 
-    def _resolve_planner_endpoint(
+    def _resolve_planner_endpoints(
         self,
         request_headers: dict[str, str],
-    ) -> ResolvedMcpEndpoint | None:
+    ) -> list[ResolvedMcpEndpoint]:
         env_values = _build_runtime_env_overrides(self.skill_service_url, self.skill_service_key)
-        endpoint_config = _select_endpoint_config(self.mcp_config_path, env_values)
-        if not endpoint_config:
-            return None
-        return resolve_mcp_endpoint(
-            endpoint_config=endpoint_config,
-            request_headers=_normalize_headers(request_headers),
-            env_values=env_values,
-        )
+        endpoint_configs = _select_endpoint_configs(self.mcp_config_path, env_values)
+        if not endpoint_configs:
+            return []
+        return [
+            resolve_mcp_endpoint(
+                endpoint_config=endpoint_config,
+                request_headers=_normalize_headers(request_headers),
+                env_values=env_values,
+            )
+            for endpoint_config in endpoint_configs
+        ]
 
     def _resolve_executor_endpoints(
         self,
@@ -429,8 +464,7 @@ class AdkRuntimeScaffold:
         env_values = _build_runtime_env_overrides(self.skill_service_url, self.skill_service_key)
         config = _load_mcp_config_or_fallback(self.mcp_config_path, env_values)
         if not config:
-            planner_endpoint = self._resolve_planner_endpoint(request_headers)
-            return [planner_endpoint] if planner_endpoint is not None else []
+            return self._resolve_planner_endpoints(request_headers)
 
         return resolve_mcp_endpoints(
             config=config,
